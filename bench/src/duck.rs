@@ -1,5 +1,6 @@
 //! `DuckDb`: the `Engine` adapter over an in-memory `duckdb::Connection`.
 
+use adelie_harness::civil;
 use adelie_harness::engine::{Engine, EngineError, Outcome, Value};
 use duckdb::Connection;
 use duckdb::types::{TimeUnit, ValueRef};
@@ -95,11 +96,51 @@ fn int_or_text(n: i128) -> Value {
     }
 }
 
-/// As `int_or_text`, for widths that are unsigned all the way up to u128 (UBigInt, UHugeInt).
+/// Widens an unsigned integer to `Value::UInt`; anything wider than u64 (UHugeInt only)
+/// becomes its decimal text instead of silently truncating.
 fn uint_or_text(n: u128) -> Value {
-    match i64::try_from(n) {
-        Ok(v) => Value::Int(v),
+    match u64::try_from(n) {
+        Ok(v) => Value::UInt(v),
         Err(_) => Value::Text(n.to_string()),
+    }
+}
+
+/// Converts a DuckDB `TIMESTAMP` to nanoseconds via a checked multiply, per its unit. On
+/// overflow (a value far outside any real calendar range) it falls back to text so a wide
+/// value never panics.
+fn timestamp_value(unit: TimeUnit, v: i64) -> Value {
+    let ns = match unit {
+        TimeUnit::Second => v.checked_mul(1_000_000_000),
+        TimeUnit::Millisecond => v.checked_mul(1_000_000),
+        TimeUnit::Microsecond => v.checked_mul(1_000),
+        TimeUnit::Nanosecond => Some(v),
+    };
+    match ns {
+        Some(ns) => Value::Timestamp(ns),
+        None => Value::Text(format_timestamp_micros(unit, v)),
+    }
+}
+
+/// Fallback when the nanosecond form overflows `i64`: renders via microseconds instead, so
+/// an extreme timestamp still prints rather than panicking.
+fn format_timestamp_micros(unit: TimeUnit, v: i64) -> String {
+    let micros = match unit {
+        TimeUnit::Second => v * 1_000_000,
+        TimeUnit::Millisecond => v * 1_000,
+        TimeUnit::Microsecond => v,
+        TimeUnit::Nanosecond => v.div_euclid(1_000),
+    };
+    let days = micros.div_euclid(86_400_000_000);
+    let of_day = micros.rem_euclid(86_400_000_000);
+    let (y, mo, d) = civil::civil_from_days(days);
+    let secs = of_day / 1_000_000;
+    let frac = of_day % 1_000_000;
+    let (h, mi, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let base = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
+    if frac == 0 {
+        base
+    } else {
+        format!("{base}.{frac:06}")
     }
 }
 
@@ -115,14 +156,19 @@ fn to_value(v: ValueRef<'_>) -> Result<Value, EngineError> {
         ValueRef::UTinyInt(n) => Value::Int(n as i64),
         ValueRef::USmallInt(n) => Value::Int(n as i64),
         ValueRef::UInt(n) => Value::Int(n as i64),
-        ValueRef::UBigInt(n) => uint_or_text(n as u128),
+        ValueRef::UBigInt(n) => Value::UInt(n),
         ValueRef::UHugeInt(n) => uint_or_text(n),
         ValueRef::Float(f) => Value::Float(f as f64),
         ValueRef::Double(f) => Value::Float(f),
-        ValueRef::Decimal(d) => Value::Float(d.value() as f64 / 10f64.powi(d.scale() as i32)),
+        ValueRef::Decimal(d) => Value::Decimal {
+            value: d.value(),
+            scale: d.scale(),
+        },
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Date32(days) => Value::Text(format_date(days as i64)),
-        ValueRef::Timestamp(unit, v) => Value::Text(format_timestamp(unit, v)),
+        ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
+        ValueRef::Date32(days) => Value::Date(days),
+        ValueRef::Timestamp(unit, v) => timestamp_value(unit, v),
+        ValueRef::List(..) => owned_to_value(v.to_owned())?,
         other => {
             return Err(EngineError(format!(
                 "duckdb: unsupported result type {other:?}"
@@ -131,45 +177,47 @@ fn to_value(v: ValueRef<'_>) -> Result<Value, EngineError> {
     })
 }
 
-/// Howard Hinnant's civil-from-days: a day count since 1970-01-01 to (year, month, day).
-/// http://howardhinnant.github.io/date_algorithms.html#civil_from_days
-pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn format_date(days: i64) -> String {
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn format_timestamp(unit: TimeUnit, v: i64) -> String {
-    let micros = match unit {
-        TimeUnit::Second => v * 1_000_000,
-        TimeUnit::Millisecond => v * 1_000,
-        TimeUnit::Microsecond => v,
-        TimeUnit::Nanosecond => v.div_euclid(1_000),
-    };
-    let days = micros.div_euclid(86_400_000_000);
-    let of_day = micros.rem_euclid(86_400_000_000);
-    let (y, mo, d) = civil_from_days(days);
-    let secs = of_day / 1_000_000;
-    let frac = of_day % 1_000_000;
-    let (h, mi, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
-    let base = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
-    if frac == 0 {
-        base
-    } else {
-        format!("{base}.{frac:06}")
-    }
+/// Converts the owned `duckdb::types::Value` a LIST's elements (and its `ValueRef::to_owned`)
+/// carry; the same mapping as `to_value` for scalar kinds, recursing into nested lists.
+/// Everything else (STRUCT, MAP, …) is a loud error, same shape as `to_value`'s fallback.
+fn owned_to_value(v: duckdb::types::Value) -> Result<Value, EngineError> {
+    use duckdb::types::Value as OwnedValue;
+    Ok(match v {
+        OwnedValue::Null => Value::Null,
+        OwnedValue::Boolean(b) => Value::Bool(b),
+        OwnedValue::TinyInt(n) => Value::Int(n as i64),
+        OwnedValue::SmallInt(n) => Value::Int(n as i64),
+        OwnedValue::Int(n) => Value::Int(n as i64),
+        OwnedValue::BigInt(n) => Value::Int(n),
+        OwnedValue::HugeInt(n) => int_or_text(n),
+        OwnedValue::UTinyInt(n) => Value::Int(n as i64),
+        OwnedValue::USmallInt(n) => Value::Int(n as i64),
+        OwnedValue::UInt(n) => Value::Int(n as i64),
+        OwnedValue::UBigInt(n) => Value::UInt(n),
+        OwnedValue::UHugeInt(n) => uint_or_text(n),
+        OwnedValue::Float(f) => Value::Float(f as f64),
+        OwnedValue::Double(f) => Value::Float(f),
+        OwnedValue::Decimal(d) => Value::Decimal {
+            value: d.value(),
+            scale: d.scale(),
+        },
+        OwnedValue::Text(s) => Value::Text(s),
+        OwnedValue::Blob(b) => Value::Bytes(b),
+        OwnedValue::Date32(days) => Value::Date(days),
+        OwnedValue::Timestamp(unit, v) => timestamp_value(unit, v),
+        OwnedValue::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(owned_to_value(item)?);
+            }
+            Value::List(out)
+        }
+        other => {
+            return Err(EngineError(format!(
+                "duckdb: unsupported list element type {other:?}"
+            )));
+        }
+    })
 }
 
 #[cfg(test)]
@@ -183,7 +231,8 @@ mod tests {
         let mut db = DuckDb::new().unwrap();
         let sql = "SELECT 1::TINYINT, 1::HUGEINT, 1.5::DOUBLE, 1.5::DECIMAL(4,1), 'x', NULL, \
                     true, DATE '2024-01-02', TIMESTAMP '2024-01-02 03:04:05', \
-                    TIMESTAMP '2024-01-02 03:04:05.5'";
+                    TIMESTAMP '2024-01-02 03:04:05.5', 18446744073709551615::UBIGINT, \
+                    '\\xAB'::BLOB, [1, NULL]";
         let Outcome::Rows(rows) = db.run(sql).unwrap() else {
             panic!("expected rows")
         };
@@ -193,13 +242,19 @@ mod tests {
                 Value::Int(1),
                 Value::Int(1),
                 Value::Float(1.5),
-                Value::Float(1.5),
+                Value::Decimal {
+                    value: 15,
+                    scale: 1
+                },
                 Value::Text("x".to_string()),
                 Value::Null,
                 Value::Bool(true),
-                Value::Text("2024-01-02".to_string()),
-                Value::Text("2024-01-02 03:04:05".to_string()),
-                Value::Text("2024-01-02 03:04:05.500000".to_string()),
+                Value::Date(19724),
+                Value::Timestamp(1_704_164_645_000_000_000),
+                Value::Timestamp(1_704_164_645_500_000_000),
+                Value::UInt(u64::MAX),
+                Value::Bytes(vec![0xab]),
+                Value::List(vec![Value::Int(1), Value::Null]),
             ]]
         );
     }
@@ -208,8 +263,25 @@ mod tests {
     #[cfg_attr(miri, ignore)] // links bundled DuckDB C++
     fn unsupported_result_type_is_a_loud_error() {
         let mut db = DuckDb::new().unwrap();
-        let err = db.run("SELECT [1, 2]").unwrap_err();
+        let err = db.run("SELECT {'a': 1}").unwrap_err();
         assert!(err.0.starts_with("duckdb: unsupported result type"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // links bundled DuckDB C++
+    fn render_text_matches_the_pre_e2_corpus_strings() {
+        let mut db = DuckDb::new().unwrap();
+        let Outcome::Rows(rows) = db
+            .run("SELECT DATE '2024-01-02', 1.50, 7::UBIGINT")
+            .unwrap()
+        else {
+            panic!("expected rows")
+        };
+        let rendered: Vec<String> = rows[0]
+            .iter()
+            .map(adelie_harness::slt::render_text)
+            .collect();
+        assert_eq!(rendered, vec!["2024-01-02", "1.5", "7"]);
     }
 
     #[test]

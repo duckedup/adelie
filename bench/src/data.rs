@@ -3,10 +3,9 @@
 
 use std::time::{Duration, Instant};
 
+use adelie_harness::civil;
 use adelie_harness::engine::{Engine, EngineError, Outcome, Value};
 use adelie_harness::rng::SplitMix64;
-
-use crate::duck::civil_from_days;
 
 /// A single table's schema and rows, engine-agnostic.
 pub struct Table {
@@ -154,7 +153,7 @@ fn hits_row(rng: &mut SplitMix64, i: i64) -> Vec<Value> {
         Value::Int(rng.next_u64() as i64),
         Value::Int(counter_id),
         Value::Text(format_datetime(day_offset, seconds)),
-        Value::Text(format_date(day_offset)),
+        Value::Text(civil::format_date(day_offset)),
         Value::Int(rng.next_u64() as i64),
         Value::Int(rng.range(1, 200) as i64),
         Value::Int(rng.range(1, 50) as i64),
@@ -290,13 +289,8 @@ fn otel_logs_columns() -> Vec<(String, &'static str)> {
     .collect()
 }
 
-fn format_date(day_offset: i64) -> String {
-    let (y, m, d) = civil_from_days(day_offset);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
 fn format_datetime(day_offset: i64, seconds_of_day: i64) -> String {
-    let (y, mo, d) = civil_from_days(day_offset);
+    let (y, mo, d) = civil::civil_from_days(day_offset);
     let (h, mi, s) = (
         seconds_of_day / 3600,
         (seconds_of_day % 3600) / 60,
@@ -319,16 +313,62 @@ fn escape_text(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// `scale` fractional digits, exact (no trailing-zero stripping): a valid DuckDB DECIMAL
+/// literal that preserves the value's declared scale.
+fn render_decimal_literal(value: i128, scale: u8) -> String {
+    let scale = scale as usize;
+    let digits = value.unsigned_abs().to_string();
+    let magnitude = if scale == 0 {
+        digits
+    } else if digits.len() <= scale {
+        format!("0.{}{digits}", "0".repeat(scale - digits.len()))
+    } else {
+        let point = digits.len() - scale;
+        format!("{}.{}", &digits[..point], &digits[point..])
+    };
+    if value < 0 {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
+}
+
+fn render_uuid_literal(bytes: &[u8; 16]) -> String {
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex[0..4].concat(),
+        hex[4..6].concat(),
+        hex[6..8].concat(),
+        hex[8..10].concat(),
+        hex[10..16].concat(),
+    )
+}
+
 fn render_literal(v: &Value, sql_type: &str) -> String {
     match v {
         Value::Null => "NULL".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Int(n) => n.to_string(),
+        Value::UInt(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
+        Value::Decimal { value, scale } => render_decimal_literal(*value, *scale),
         Value::Text(s) if sql_type.eq_ignore_ascii_case("TIMESTAMP") => {
             format!("TIMESTAMP '{}'", escape_text(s))
         }
         Value::Text(s) => format!("'{}'", escape_text(s)),
+        Value::Bytes(b) => {
+            let hex: String = b.iter().map(|byte| format!("\\x{byte:02X}")).collect();
+            format!("'{hex}'::BLOB")
+        }
+        Value::Timestamp(ns) => format!("TIMESTAMP '{}'", civil::format_timestamp_ns(*ns)),
+        Value::Date(d) => format!("DATE '{}'", civil::format_date(*d as i64)),
+        Value::Uuid(bytes) => format!("'{}'::UUID", render_uuid_literal(bytes)),
+        Value::Ip(addr) => format!("'{addr}'"),
+        Value::List(xs) => {
+            let items: Vec<String> = xs.iter().map(|v| render_literal(v, "")).collect();
+            format!("[{}]", items.join(", "))
+        }
     }
 }
 
@@ -441,5 +481,56 @@ mod tests {
             panic!("expected rows")
         };
         assert_eq!(rows, vec![vec![Value::Int(50)]]);
+    }
+
+    /// Each new variant's literal is valid SQL: insert it into a column of its natural
+    /// DuckDB type and read it back. UUID/IP read back as `Text` (duck.rs never maps to
+    /// those variants), so those two pass an expected `Text` instead.
+    #[test]
+    #[cfg_attr(miri, ignore)] // links bundled DuckDB C++
+    fn render_literal_new_variants_are_valid_and_round_trip() {
+        use crate::duck::DuckDb;
+        let cases: Vec<(&str, Value, Option<Value>)> = vec![
+            ("UBIGINT", Value::UInt(u64::MAX), None),
+            (
+                "DECIMAL(4,2)",
+                Value::Decimal {
+                    value: 150,
+                    scale: 2,
+                },
+                None,
+            ),
+            ("BLOB", Value::Bytes(vec![0xab, 0x01]), None),
+            (
+                "TIMESTAMP",
+                Value::Timestamp(1_704_164_645_500_000_000),
+                None,
+            ),
+            ("DATE", Value::Date(19724), None),
+            (
+                "UUID",
+                Value::Uuid([0x11; 16]),
+                Some(Value::Text(
+                    "11111111-1111-1111-1111-111111111111".to_string(),
+                )),
+            ),
+            (
+                "VARCHAR",
+                Value::Ip("127.0.0.1".parse().unwrap()),
+                Some(Value::Text("127.0.0.1".to_string())),
+            ),
+            ("INT[]", Value::List(vec![Value::Int(1), Value::Null]), None),
+        ];
+        for (col_ty, v, expect) in cases {
+            let mut db = DuckDb::new().unwrap();
+            db.run(&format!("CREATE TABLE t (c {col_ty})")).unwrap();
+            let literal = render_literal(&v, col_ty);
+            db.run(&format!("INSERT INTO t VALUES ({literal})"))
+                .unwrap();
+            let Outcome::Rows(rows) = db.run("SELECT c FROM t").unwrap() else {
+                panic!("expected rows")
+            };
+            assert_eq!(rows, vec![vec![expect.unwrap_or(v)]]);
+        }
     }
 }

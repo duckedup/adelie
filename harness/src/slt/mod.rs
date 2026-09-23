@@ -13,6 +13,7 @@ use crate::engine::Engine;
 
 pub use diff::diff;
 pub use parse::parse;
+pub use render::render_text;
 pub use run::run;
 
 /// One column type a `query` record declares, one char per column.
