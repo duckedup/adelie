@@ -2,6 +2,7 @@
 //! rename, fsync-directory, then a numbered hard link kept for `retain_manifests` versions.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::fail;
 use crate::io::Io;
@@ -15,6 +16,7 @@ pub struct Publisher {
     root: PathBuf,
     io: Io,
     retain_manifests: usize,
+    swept: AtomicBool,
 }
 
 impl Publisher {
@@ -23,6 +25,7 @@ impl Publisher {
             root,
             io,
             retain_manifests,
+            swept: AtomicBool::new(false),
         }
     }
 
@@ -63,24 +66,38 @@ impl Publisher {
             .sync_dir(&self.root)
             .map_err(|source| io_err(&self.root, source))?;
 
-        let versioned = self.versioned_path(m.version);
-        self.io
-            .hard_link(&dest, &versioned)
-            .map_err(|source| io_err(&versioned, source))?;
-
+        // Committed above; the link and prune are a debugging aid. Failing here would tell the
+        // caller a durable commit did not happen, and invite a retry that applies it twice.
+        let _ = self.io.hard_link(&dest, &self.versioned_path(m.version));
         self.prune(m.version);
         Ok(())
     }
 
-    /// Removes `manifest.<v>` links older than the last `retain_manifests`. Best-effort: a
-    /// missing or already-gone link is fine, and a failure here never fails `publish`.
+    /// Removes `manifest.<v>` links older than the last `retain_manifests`. Best-effort. The
+    /// first publish sweeps the directory once (links left by a crash or a smaller `retain`);
+    /// after that each publish removes only the one link that just fell out of the window.
     fn prune(&self, latest: u64) {
         let retain = self.retain_manifests as u64;
         if retain == 0 || latest < retain {
             return;
         }
-        for v in 0..=(latest - retain) {
-            let _ = self.io.remove(&self.versioned_path(v));
+        let cutoff = latest - retain;
+        if self.swept.swap(true, Ordering::Relaxed) {
+            let _ = self.io.remove(&self.versioned_path(cutoff));
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let version = name
+                .to_str()
+                .and_then(|n| n.strip_prefix(&format!("{MANIFEST_FILE}.")))
+                .and_then(|v| v.parse::<u64>().ok());
+            if version.is_some_and(|v| v <= cutoff) {
+                let _ = self.io.remove(&entry.path());
+            }
         }
     }
 
@@ -176,6 +193,27 @@ mod tests {
             .collect();
         present.sort_unstable();
         assert_eq!(present, vec![8, 9, 10]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn the_first_publish_sweeps_links_a_previous_run_left_behind() {
+        let root = temp_dir("publish-sweep");
+        std::fs::create_dir_all(&root).unwrap();
+        for v in 1..=5u64 {
+            std::fs::write(root.join(format!("manifest.{v}")), b"old").unwrap();
+        }
+        let publisher = Publisher::new(root.clone(), Io::real(), 2);
+        let mut m = Manifest::empty();
+        m.version = 6;
+        publisher.publish(&m).unwrap();
+
+        let present: Vec<u64> = (1..=6)
+            .filter(|v| root.join(format!("manifest.{v}")).exists())
+            .collect();
+        assert_eq!(present, vec![5, 6]);
+        assert!(root.join(MANIFEST_FILE).exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -8,7 +8,10 @@ use crate::segment::{DecodeError, footer, type_id, value};
 use crate::types::DataType;
 
 use super::error::Error;
-use super::{CmpOp, Garbage, Manifest, Predicate, SegmentEntry, SideFile, TableEntry, TableName, Tombstone};
+use super::{
+    CmpOp, Garbage, Manifest, Predicate, SegmentEntry, SideFile, TableEntry, TableName, Tombstone,
+    is_path_component,
+};
 
 const MANIFEST_MAGIC: [u8; 6] = *b"ADLMAN";
 const MANIFEST_VERSION: u16 = 1;
@@ -87,6 +90,16 @@ fn corrupt_str(path: &str, detail: &str) -> Error {
     }
 }
 
+/// A name read off disk becomes a path under the store root: one that could escape it is
+/// corrupt, never followed.
+fn check_component(path: &str, s: &str) -> Result<(), Error> {
+    if is_path_component(s) {
+        Ok(())
+    } else {
+        Err(corrupt_str(path, "name is not a single path component"))
+    }
+}
+
 fn corrupt(path: &str, e: DecodeError) -> Error {
     let detail = match e {
         DecodeError::Truncated => "truncated".to_string(),
@@ -148,6 +161,8 @@ fn decode_table_entry(cur: &mut Cursor, path: &str) -> Result<TableEntry, Error>
     let db = body.str().map_err(|e| corrupt(path, e))?.to_string();
     let name = body.str().map_err(|e| corrupt(path, e))?.to_string();
     let engine = body.str().map_err(|e| corrupt(path, e))?.to_string();
+    check_component(path, &db)?;
+    check_component(path, &name)?;
     let schema = decode_schema(&mut body, path)?;
     let segments = decode_segments(&mut body, &schema, path)?;
     let tombstones = decode_tombstones(&mut body, &schema, path)?;
@@ -221,6 +236,7 @@ fn decode_segment(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Segm
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let id = body.uvarint().map_err(|e| corrupt(path, e))?;
     let partition = body.str().map_err(|e| corrupt(path, e))?.to_string();
+    check_component(path, &partition)?;
     let seq = body.uvarint().map_err(|e| corrupt(path, e))?;
     let rows = body.uvarint().map_err(|e| corrupt(path, e))?;
     let bytes = body.uvarint().map_err(|e| corrupt(path, e))?;
@@ -426,6 +442,8 @@ fn decode_garbage(cur: &mut Cursor, path: &str) -> Result<Vec<Garbage>, Error> {
         let mut gr = body.record().map_err(|e| corrupt(path, e))?;
         let db = gr.str().map_err(|e| corrupt(path, e))?.to_string();
         let name = gr.str().map_err(|e| corrupt(path, e))?.to_string();
+        check_component(path, &db)?;
+        check_component(path, &name)?;
         let removed_at_ms = gr.uvarint().map_err(|e| corrupt(path, e))?;
         let segment = decode_segment(&mut gr, &[], path)?;
         out.push(Garbage {
@@ -698,6 +716,18 @@ mod tests {
             Manifest::decode("m", &bytes),
             Err(Error::UnsupportedVersion { version: 99, .. })
         ));
+    }
+
+    #[test]
+    fn a_name_off_disk_that_could_escape_the_root_is_corrupt() {
+        let mut escaped_table = sample_manifest();
+        escaped_table.tables[0].name.db = "..".to_string();
+        let mut escaped_partition = sample_manifest();
+        escaped_partition.tables[0].segments[0].partition = "../x".to_string();
+        for m in [escaped_table, escaped_partition] {
+            let r = Manifest::decode("manifest", &m.encode());
+            assert!(matches!(r, Err(Error::Corrupt { .. })), "{r:?}");
+        }
     }
 
     #[test]

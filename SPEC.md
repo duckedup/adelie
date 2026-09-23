@@ -236,8 +236,9 @@ unit of pruning and of parallel work).
   adaptive (§16.2).
 
 **Manifest.** The one mutable object: the live segment set per table, each segment's partition,
-row count, column summary, and commit sequence, each table's schema, engine, and recorded
-tombstones, a garbage list of segments awaiting deletion, and a monotonic version. It is
+row count, column summary, commit sequence, and side files (derived per-segment state such
+as a deletion vector, which a reader must not ignore), each table's schema, engine, and
+recorded tombstones, a garbage list of segments awaiting deletion, and a monotonic version. It is
 CRC-checked and published by write-to-temp, fsync, rename, fsync-directory. Publishing a
 manifest is the commit point for every change. Its format is D0009.
 
@@ -657,10 +658,11 @@ guardrails (§11), not a separate feature set.
 
 ---
 
-## 18. Table engines (proposed)
+## 18. Table engines
 
 A table's **engine** decides its layout and what compaction does to its rows. adelie, nidus,
 and a transactional store share one core and differ only in engines. Tracked by `adelie-goi`.
+The boundary and `append` are built (E4, D0009); the other engines are proposed.
 
 **The split.** Modelled on PostgreSQL's table access methods, not MySQL's storage engines.
 

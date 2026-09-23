@@ -266,15 +266,19 @@ impl Store {
     pub fn flush(&self) -> Result<u64, Error> {
         let (pending_ticket, in_flight_ticket) = {
             let mut state = self.shared.state.lock().unwrap();
-            state.force = true;
             let pending_ticket = (!state.pending.is_empty()).then(|| state.ticket.clone());
             let in_flight_ticket = state.in_flight_ticket.clone();
+            if pending_ticket.is_none() && in_flight_ticket.is_none() {
+                return Ok(state.current.version());
+            }
+            // Only set when there is something to force: a stale `force` would flush the next
+            // write alone instead of letting it group-commit.
+            if pending_ticket.is_some() {
+                state.force = true;
+            }
             (pending_ticket, in_flight_ticket)
         };
         self.shared.wake.notify_one();
-        if pending_ticket.is_none() && in_flight_ticket.is_none() {
-            return Ok(self.shared.state.lock().unwrap().current.version());
-        }
         if let Some(t) = &in_flight_ticket {
             t.wait().map_err(Error::Flush)?;
         }
@@ -319,12 +323,14 @@ impl Store {
         for (t, v) in state.in_flight.iter().chain(state.pending.iter()) {
             buffered.entry(t.clone()).or_default().extend(v.iter().cloned());
         }
-        drop(state);
+        // Registered before `state` is released, so a gc that reads `current` after us also sees
+        // us in `live`. Lock order is state, then live; gc never holds live while taking state.
         {
             let mut live = self.shared.live.lock().unwrap();
             live.retain(|w| w.strong_count() > 0);
             live.push(Arc::downgrade(&current));
         }
+        drop(state);
         View {
             snapshot: current,
             buffered,
@@ -500,6 +506,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn wait_until_buffered(store: &Store) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while store.snapshot().buffered(&table()).is_empty() {
+            assert!(std::time::Instant::now() < deadline, "write never reached the buffer");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem, spawns a thread
+    fn an_idle_flush_does_not_force_the_next_write_out_alone() {
+        let dir = temp_dir("idle-flush");
+        let opts = StoreOptions {
+            flush_interval: Duration::from_secs(3600),
+            ..StoreOptions::default()
+        };
+        let store = Arc::new(open(&dir, opts));
+        let before = store.flush().unwrap(); // nothing pending: a no-op
+        let writer = {
+            let store = store.clone();
+            std::thread::spawn(move || store.write(&table(), batch(0, 1)).unwrap())
+        };
+        wait_until_buffered(&store);
+        std::thread::sleep(Duration::from_millis(200));
+        // A stale `force` from the idle flush would have published this write already.
+        assert_eq!(store.snapshot().version(), before);
+        assert!(!writer.is_finished());
+        store.flush().unwrap();
+        assert_eq!(writer.join().unwrap(), before + 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // touches the real filesystem, spawns a thread
     fn delete_flushes_pending_rows_first_so_the_tombstone_covers_them() {
@@ -514,12 +552,7 @@ mod tests {
             let store = store.clone();
             std::thread::spawn(move || store.write(&table(), batch(0, 1)).unwrap())
         };
-        loop {
-            if !store.snapshot().buffered(&table()).is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until_buffered(&store);
 
         let del_version = store
             .delete(
@@ -544,7 +577,14 @@ mod tests {
             .unwrap();
         assert_eq!(view.table(&table()).unwrap().tombstones_for(seg).len(), 1);
 
-        let later_version = store.write(&table(), batch(1, 1)).unwrap();
+        // Blocking would wait out the 1h interval, so write on a thread and force the flush.
+        let later = {
+            let store = store.clone();
+            std::thread::spawn(move || store.write(&table(), batch(1, 1)).unwrap())
+        };
+        wait_until_buffered(&store);
+        store.flush().unwrap();
+        let later_version = later.join().unwrap();
         let view2 = store.snapshot();
         let later_seg = view2
             .table(&table())
@@ -554,6 +594,31 @@ mod tests {
             .find(|s| s.seq == later_version)
             .unwrap();
         assert!(view2.table(&table()).unwrap().tombstones_for(later_seg).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn opening_a_manifest_with_an_unknown_engine_names_it() {
+        let dir = temp_dir("unknown-engine-open");
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = crate::manifest::Commit {
+            base: 0,
+            edits: vec![Edit::CreateTable {
+                name: table(),
+                engine: "nope".to_string(),
+                schema: schema(),
+            }],
+        }
+        .apply(&crate::manifest::Manifest::empty(), 0)
+        .unwrap();
+        Publisher::new(dir.clone(), Io::real(), 8).publish(&m).unwrap();
+
+        let err = Store::open(&dir, StoreOptions::default()).err().expect("open must fail");
+        assert!(
+            matches!(&err, Error::Manifest(manifest::Error::UnknownEngine { engine, .. }) if engine == "nope"),
+            "{err}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

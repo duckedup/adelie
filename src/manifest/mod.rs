@@ -33,6 +33,12 @@ impl TableName {
     }
 }
 
+/// A db, table or partition name becomes one directory under the store root, so it must be a
+/// single, ordinary path component: never empty, `.`, `..`, or holding a separator or NUL.
+pub(crate) fn is_path_component(s: &str) -> bool {
+    !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', '\0'])
+}
+
 impl fmt::Display for TableName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.db, self.name)

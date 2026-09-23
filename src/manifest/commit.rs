@@ -2,10 +2,10 @@
 //! conflicts only over a segment no longer live or a table that already exists.
 
 use crate::exec::Field;
-use crate::types::{DataType, Value};
+use crate::types::{DataType, Value, coerce};
 
 use super::error::Error;
-use super::{CmpOp, Garbage, Manifest, Predicate, SegmentEntry, TableEntry, TableName, Tombstone};
+use super::{CmpOp, Garbage, Manifest, is_path_component, Predicate, SegmentEntry, TableEntry, TableName, Tombstone};
 
 /// One change to a `Manifest`. `Commit::apply` applies a list of these in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +97,11 @@ fn create_table(
     engine: &str,
     schema: &[Field],
 ) -> Result<(), Error> {
+    if !is_path_component(&name.db) || !is_path_component(&name.name) {
+        return Err(Error::Usage(format!(
+            "table name {name}: db and name must each be one path component"
+        )));
+    }
     if m.table(name).is_some() {
         return Err(Error::Conflict {
             table: name.to_string(),
@@ -176,6 +181,7 @@ fn remove_segments(
 fn add_tombstone(m: &mut Manifest, table: &TableName, predicates: &[Predicate]) -> Result<(), Error> {
     let idx = table_index(m, table)?;
     let schema = &m.tables[idx].schema;
+    let mut stored = Vec::with_capacity(predicates.len());
     for p in predicates {
         if p.value.is_null() {
             return Err(Error::Usage(format!(
@@ -187,17 +193,22 @@ fn add_tombstone(m: &mut Manifest, table: &TableName, predicates: &[Predicate]) 
             .iter()
             .find(|f| f.name == p.column)
             .ok_or_else(|| Error::Usage(format!("unknown column {}", p.column)))?;
-        if !value_matches_type(&p.value, &field.ty) {
-            return Err(Error::Usage(format!(
-                "tombstone predicate value for {} does not match column type {}",
-                p.column, field.ty
-            )));
-        }
+        // Stored at the column's exact type, as `Column::push` does: the codec writes a DECIMAL's
+        // unscaled digits and reads them back at the column's scale.
+        let value = coerce(&p.value, &field.ty)
+            .filter(|v| value_matches_type(v, &field.ty))
+            .ok_or_else(|| {
+                Error::Usage(format!(
+                    "tombstone predicate value for {} does not fit column type {}",
+                    p.column, field.ty
+                ))
+            })?;
+        stored.push(Predicate { value, ..p.clone() });
     }
     let seq = m.version + 1;
     m.tables[idx].tombstones.push(Tombstone {
         seq,
-        predicates: predicates.to_vec(),
+        predicates: stored,
     });
     Ok(())
 }
@@ -233,6 +244,7 @@ fn reserve_segment_ids(m: &mut Manifest, next: u64) {
 mod tests {
     use super::*;
     use crate::exec::ColumnStats;
+    use crate::types::Decimal;
 
     fn schema() -> Vec<Field> {
         vec![Field {
@@ -271,6 +283,21 @@ mod tests {
                 max: Some(Value::Int64(0)),
             }],
             side_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_table_name_that_could_escape_the_store_root_is_usage() {
+        for (db, name) in [("..", "t"), ("d", ".."), ("d", "a/b"), ("", "t"), ("d", "."), ("/abs", "t")] {
+            let commit = Commit {
+                base: 0,
+                edits: vec![Edit::CreateTable {
+                    name: TableName::new(db, name),
+                    engine: "append".to_string(),
+                    schema: schema(),
+                }],
+            };
+            assert!(matches!(commit.apply(&Manifest::empty(), 0), Err(Error::Usage(_))), "{db:?}.{name:?}");
         }
     }
 
@@ -455,6 +482,53 @@ mod tests {
             next.table(&TableName::new("d", "t")).unwrap().tombstones[0].seq,
             next.version
         );
+    }
+
+    fn decimal_table(precision: u8, scale: u8) -> Manifest {
+        Commit {
+            base: 0,
+            edits: vec![Edit::CreateTable {
+                name: TableName::new("d", "p"),
+                engine: "append".to_string(),
+                schema: vec![Field {
+                    name: "price".to_string(),
+                    ty: DataType::decimal(precision, scale).unwrap(),
+                }],
+            }],
+        }
+        .apply(&Manifest::empty(), 0)
+        .unwrap()
+    }
+
+    fn delete_price(m: &Manifest, value: Value) -> Result<Manifest, Error> {
+        Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: TableName::new("d", "p"),
+                predicates: vec![Predicate {
+                    column: "price".to_string(),
+                    op: CmpOp::Eq,
+                    value,
+                }],
+            }],
+        }
+        .apply(m, 0)
+    }
+
+    #[test]
+    fn a_decimal_tombstone_is_rescaled_to_the_column_and_survives_a_reload() {
+        // 10.5 at scale 1 into DECIMAL(10, 2): stored as 10.50, not read back as 1.05.
+        let m = delete_price(&decimal_table(10, 2), Value::Decimal(Decimal::new(105, 1).unwrap())).unwrap();
+        let reloaded = Manifest::decode("manifest", &m.encode()).unwrap();
+        let t = &reloaded.table(&TableName::new("d", "p")).unwrap().tombstones[0];
+        assert_eq!(t.predicates[0].value, Value::Decimal(Decimal::new(1050, 2).unwrap()));
+    }
+
+    #[test]
+    fn a_decimal_tombstone_beyond_the_column_precision_is_usage() {
+        // 1234567.89 cannot fit DECIMAL(3, 2); committing it would leave an undecodable manifest.
+        let r = delete_price(&decimal_table(3, 2), Value::Decimal(Decimal::new(123_456_789, 2).unwrap()));
+        assert!(matches!(r, Err(Error::Usage(_))), "{r:?}");
     }
 
     #[test]

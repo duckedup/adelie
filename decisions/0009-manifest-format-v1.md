@@ -134,15 +134,18 @@ file no reader understands may be a deletion vector, and skipping it would resur
 
 | edit | conflicts when |
 |---|---|
-| `CreateTable` | a table of that name already exists |
+| `CreateTable` | a table of that name already exists; `Usage` if `db` or `name` is not one path component (empty, `.`, `..`, or holding `/`, `\` or NUL) |
 | `AddSegments` | never (appends never conflict); `Usage` if a segment's `columns` length doesn't match the table's schema length |
 | `RemoveSegments` | any named id is not live in the current manifest |
-| `AddTombstone` | never, once the table exists; `Usage` for a null value, an unknown column, or a value that doesn't match the column's type |
+| `AddTombstone` | never, once the table exists; `Usage` for a null value, an unknown column, or a value that does not fit the column's type. The value is stored coerced to that exact type (a DECIMAL rescaled to its scale), because the codec writes a DECIMAL's unscaled digits and reads them back at the column's scale |
 | `ForgetGarbage` | never; missing ids are ignored |
 | `ReserveSegmentIds` | never; only ever raises `next_segment_id` |
 
 Every edit except `ForgetGarbage` and `ReserveSegmentIds` also conflicts if it names a table
 that doesn't exist.
+
+A decoder applies the same path-component rule to every `db`, `name` and `partition` it reads:
+one that could escape the store root is `Corrupt`, never followed.
 
 ## The durability order
 
@@ -155,8 +158,9 @@ A write is acked only once both its segment and the manifest naming it are durab
    a. write `manifest.tmp`, fsync it;
    b. fire `manifest.pre_rename`, then rename `manifest.tmp` to `manifest`;
    c. fire `manifest.pre_dir_sync`, then fsync the store's root directory;
-   d. hard-link `manifest` to `manifest.<version>` (best-effort pruning of links older than
-      `retain_manifests` follows; a failure there never fails the publish).
+   d. hard-link `manifest` to `manifest.<version>`, then prune links older than
+      `retain_manifests`. Both are best-effort: the commit already happened at (c), so a
+      failure here must not tell the caller it did not.
 4. Fire `flush.pre_ack`, then ack the write.
 
 Compaction follows the same segment-then-manifest shape (write + sync each output, sync its
