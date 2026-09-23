@@ -56,34 +56,61 @@ fn parse_block(block: &[(usize, &str)]) -> Result<Option<Record>, ParseError> {
     let body = &block[idx + 1..];
 
     if header == "halt" {
-        return Ok(Some(Record { line: header_line, conditions, sql: String::new(), directive: Directive::Halt }));
+        return Ok(Some(Record {
+            line: header_line,
+            conditions,
+            sql: String::new(),
+            directive: Directive::Halt,
+        }));
     }
     if header.starts_with("hash-threshold") {
         return Ok(None);
     }
     if header == "statement ok" {
         let sql = join_sql(body);
-        return Ok(Some(Record { line: header_line, conditions, sql, directive: Directive::StatementOk }));
+        return Ok(Some(Record {
+            line: header_line,
+            conditions,
+            sql,
+            directive: Directive::StatementOk,
+        }));
     }
     if let Some(rest) = header.strip_prefix("statement error") {
         let sql = join_sql(body);
         let directive = Directive::StatementError(optional_substring(rest));
-        return Ok(Some(Record { line: header_line, conditions, sql, directive }));
+        return Ok(Some(Record {
+            line: header_line,
+            conditions,
+            sql,
+            directive,
+        }));
     }
     if let Some(rest) = header.strip_prefix("query error") {
         let sql = join_sql(body);
         let directive = Directive::QueryError(optional_substring(rest));
-        return Ok(Some(Record { line: header_line, conditions, sql, directive }));
+        return Ok(Some(Record {
+            line: header_line,
+            conditions,
+            sql,
+            directive,
+        }));
     }
     if let Some(rest) = header.strip_prefix("query") {
         return parse_query(header_line, conditions, rest, body);
     }
-    Err(ParseError { line: header_line, msg: format!("unknown directive: {header}") })
+    Err(ParseError {
+        line: header_line,
+        msg: format!("unknown directive: {header}"),
+    })
 }
 
 fn optional_substring(rest: &str) -> Option<String> {
     let s = rest.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 fn parse_query(
@@ -93,9 +120,10 @@ fn parse_query(
     body: &[(usize, &str)],
 ) -> Result<Option<Record>, ParseError> {
     let mut words = rest.trim().split_whitespace();
-    let types_word = words
-        .next()
-        .ok_or_else(|| ParseError { line: header_line, msg: "query: missing column types".to_string() })?;
+    let types_word = words.next().ok_or_else(|| ParseError {
+        line: header_line,
+        msg: "query: missing column types".to_string(),
+    })?;
     let types = parse_types(types_word, header_line)?;
 
     let mut sort = SortMode::NoSort;
@@ -117,11 +145,29 @@ fn parse_query(
     let sql = join_sql(sql_lines);
 
     if expected_lines.len() == 1 && is_hash_line(expected_lines[0].1.trim()) {
-        return Ok(Some(Record { line: header_line, conditions, sql, directive: Directive::QueryHashUnsupported }));
+        return Ok(Some(Record {
+            line: header_line,
+            conditions,
+            sql,
+            directive: Directive::QueryHashUnsupported,
+        }));
     }
-    let expected = expected_lines.iter().map(|(_, t)| t.trim().to_string()).collect();
-    let directive = Directive::Query { types, sort, label, expected };
-    Ok(Some(Record { line: header_line, conditions, sql, directive }))
+    let expected = expected_lines
+        .iter()
+        .map(|(_, t)| t.trim().to_string())
+        .collect();
+    let directive = Directive::Query {
+        types,
+        sort,
+        label,
+        expected,
+    };
+    Ok(Some(Record {
+        line: header_line,
+        conditions,
+        sql,
+        directive,
+    }))
 }
 
 fn parse_types(word: &str, line: usize) -> Result<Vec<ColType>, ParseError> {
@@ -130,7 +176,10 @@ fn parse_types(word: &str, line: usize) -> Result<Vec<ColType>, ParseError> {
             'I' => Ok(ColType::Int),
             'R' => Ok(ColType::Real),
             'T' => Ok(ColType::Text),
-            other => Err(ParseError { line, msg: format!("bad column type '{other}'") }),
+            other => Err(ParseError {
+                line,
+                msg: format!("bad column type '{other}'"),
+            }),
         })
         .collect()
 }
@@ -146,7 +195,11 @@ fn is_hash_line(s: &str) -> bool {
 }
 
 fn join_sql(lines: &[(usize, &str)]) -> String {
-    lines.iter().map(|(_, t)| t.trim()).collect::<Vec<_>>().join("\n")
+    lines
+        .iter()
+        .map(|(_, t)| t.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -164,7 +217,10 @@ mod tests {
     #[test]
     fn statement_error_with_substring() {
         let records = parse("statement error no such table\nDROP TABLE t").unwrap();
-        assert_eq!(records[0].directive, Directive::StatementError(Some("no such table".to_string())));
+        assert_eq!(
+            records[0].directive,
+            Directive::StatementError(Some("no such table".to_string()))
+        );
     }
 
     #[test]
@@ -178,7 +234,12 @@ mod tests {
         let src = "query IT rowsort\nSELECT a, b FROM t\n----\n1 x\n2 y";
         let records = parse(src).unwrap();
         match &records[0].directive {
-            Directive::Query { types, sort, expected, label } => {
+            Directive::Query {
+                types,
+                sort,
+                expected,
+                label,
+            } => {
                 assert_eq!(*types, vec![ColType::Int, ColType::Text]);
                 assert_eq!(*sort, SortMode::RowSort);
                 assert_eq!(*expected, vec!["1 x".to_string(), "2 y".to_string()]);
@@ -191,7 +252,10 @@ mod tests {
     #[test]
     fn query_error() {
         let records = parse("query error boom\nSELECT 1/0").unwrap();
-        assert_eq!(records[0].directive, Directive::QueryError(Some("boom".to_string())));
+        assert_eq!(
+            records[0].directive,
+            Directive::QueryError(Some("boom".to_string()))
+        );
     }
 
     #[test]
@@ -200,7 +264,10 @@ mod tests {
         let records = parse(src).unwrap();
         assert_eq!(
             records[0].conditions,
-            vec![Condition::SkipIf("duckdb".to_string()), Condition::OnlyIf("adelie".to_string())]
+            vec![
+                Condition::SkipIf("duckdb".to_string()),
+                Condition::OnlyIf("adelie".to_string())
+            ]
         );
     }
 

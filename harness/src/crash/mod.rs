@@ -6,9 +6,9 @@
 //! also why the "acks before writing" fake buffers in memory rather than writing unsynced.
 
 mod child;
-mod verdict;
 #[cfg(test)]
 mod tests;
+mod verdict;
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -67,12 +67,38 @@ pub struct Summary {
 /// A defect a reopened store showed after a kill, with enough context to reproduce it.
 #[derive(Debug)]
 pub enum Violation {
-    LostAck { run: u32, batch: u64, dir: PathBuf },
-    Torn { run: u32, batch: u64, present: usize, expected: usize, dir: PathBuf },
-    Phantom { run: u32, batch: u64, dir: PathBuf },
-    Duplicate { run: u32, batch: u64, row: u32, dir: PathBuf },
-    Child { run: u32, msg: String },
-    Reopen { run: u32, err: String, dir: PathBuf },
+    LostAck {
+        run: u32,
+        batch: u64,
+        dir: PathBuf,
+    },
+    Torn {
+        run: u32,
+        batch: u64,
+        present: usize,
+        expected: usize,
+        dir: PathBuf,
+    },
+    Phantom {
+        run: u32,
+        batch: u64,
+        dir: PathBuf,
+    },
+    Duplicate {
+        run: u32,
+        batch: u64,
+        row: u32,
+        dir: PathBuf,
+    },
+    Child {
+        run: u32,
+        msg: String,
+    },
+    Reopen {
+        run: u32,
+        err: String,
+        dir: PathBuf,
+    },
 }
 
 impl std::fmt::Display for Violation {
@@ -83,7 +109,13 @@ impl std::fmt::Display for Violation {
                 "lost ack: run {run} batch {batch} is missing entirely (dir: {})",
                 dir.display()
             ),
-            Violation::Torn { run, batch, present, expected, dir } => write!(
+            Violation::Torn {
+                run,
+                batch,
+                present,
+                expected,
+                dir,
+            } => write!(
                 f,
                 "torn batch: run {run} batch {batch} has {present}/{expected} rows (dir: {})",
                 dir.display()
@@ -93,14 +125,23 @@ impl std::fmt::Display for Violation {
                 "phantom batch: run {run} batch {batch} was never sent (dir: {})",
                 dir.display()
             ),
-            Violation::Duplicate { run, batch, row, dir } => write!(
+            Violation::Duplicate {
+                run,
+                batch,
+                row,
+                dir,
+            } => write!(
                 f,
                 "duplicate row: run {run} batch {batch} row {row} appears twice (dir: {})",
                 dir.display()
             ),
             Violation::Child { run, msg } => write!(f, "child failed: run {run}: {msg}"),
             Violation::Reopen { run, err, dir } => {
-                write!(f, "reopen failed: run {run}: {err} (dir: {})", dir.display())
+                write!(
+                    f,
+                    "reopen failed: run {run}: {err} (dir: {})",
+                    dir.display()
+                )
             }
         }
     }
@@ -118,8 +159,12 @@ pub fn failpoint(name: &str) {
     if std::env::var("ADELIE_CRASH_ROLE").ok().as_deref() != Some("child") {
         return;
     }
-    let Ok(spec) = std::env::var("ADELIE_FAILPOINT") else { return };
-    let Some((fp_name, nth)) = spec.split_once(':') else { return };
+    let Ok(spec) = std::env::var("ADELIE_FAILPOINT") else {
+        return;
+    };
+    let Some((fp_name, nth)) = spec.split_once(':') else {
+        return;
+    };
     if fp_name != name {
         return;
     }
@@ -166,7 +211,10 @@ fn crash_dir(test_path: &str, run: u32) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    std::env::temp_dir().join(format!("adelie-crash-{}-{sanitised}-{run}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "adelie-crash-{}-{sanitised}-{run}",
+        std::process::id()
+    ))
 }
 
 /// One drive_* function's result: whether the child was killed, and what it acked/sent.
@@ -177,9 +225,14 @@ struct DriveOutcome {
 }
 
 fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, Violation> {
-    let exe = std::env::current_exe()
-        .map_err(|e| Violation::Child { run: 0, msg: format!("current_exe: {e}") })?;
-    let bin_test_path = test_path.split_once("::").map(|(_, rest)| rest).unwrap_or(test_path);
+    let exe = std::env::current_exe().map_err(|e| Violation::Child {
+        run: 0,
+        msg: format!("current_exe: {e}"),
+    })?;
+    let bin_test_path = test_path
+        .split_once("::")
+        .map(|(_, rest)| rest)
+        .unwrap_or(test_path);
 
     let mut killed = 0u32;
     let mut acked_rows_checked = 0u64;
@@ -187,8 +240,10 @@ fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, V
     for run in 0..plan.runs {
         let dir = crash_dir(test_path, run);
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| Violation::Child { run, msg: format!("mkdir {}: {e}", dir.display()) })?;
+        std::fs::create_dir_all(&dir).map_err(|e| Violation::Child {
+            run,
+            msg: format!("mkdir {}: {e}", dir.display()),
+        })?;
 
         let mut rng = SplitMix64::new(plan.seed ^ run as u64);
         let lockstep = !matches!(plan.kill, Kill::Random { .. });
@@ -208,8 +263,10 @@ fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, V
             cmd.env("ADELIE_FAILPOINT", format!("{name}:{nth}"));
         }
 
-        let mut child =
-            cmd.spawn().map_err(|e| Violation::Child { run, msg: format!("spawn: {e}") })?;
+        let mut child = cmd.spawn().map_err(|e| Violation::Child {
+            run,
+            msg: format!("spawn: {e}"),
+        })?;
 
         let outcome = match plan.kill {
             Kill::AtAck => drive_at_ack(&mut child, rng.range(1, plan.batches)),
@@ -218,39 +275,72 @@ fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, V
         }
         .map_err(|msg| Violation::Child { run, msg })?;
 
-        let status =
-            child.wait().map_err(|e| Violation::Child { run, msg: format!("wait: {e}") })?;
+        let status = child.wait().map_err(|e| Violation::Child {
+            run,
+            msg: format!("wait: {e}"),
+        })?;
         if !outcome.killed && !status.success() {
-            return Err(Violation::Child { run, msg: format!("child exited with {status}") });
+            return Err(Violation::Child {
+                run,
+                msg: format!("child exited with {status}"),
+            });
         }
         if outcome.killed {
             killed += 1;
         }
 
-        let store = T::open(&dir)
-            .map_err(|e| Violation::Reopen { run, err: e.to_string(), dir: dir.clone() })?;
-        let rows = T::read_all(&store)
-            .map_err(|e| Violation::Reopen { run, err: e.to_string(), dir: dir.clone() })?;
+        let store = T::open(&dir).map_err(|e| Violation::Reopen {
+            run,
+            err: e.to_string(),
+            dir: dir.clone(),
+        })?;
+        let rows = T::read_all(&store).map_err(|e| Violation::Reopen {
+            run,
+            err: e.to_string(),
+            dir: dir.clone(),
+        })?;
 
-        verdict::verdict(outcome.acked, outcome.highest_sent, plan.rows_per_batch, &rows)
-            .map_err(|d| to_violation(d, run, &dir))?;
+        verdict::verdict(
+            outcome.acked,
+            outcome.highest_sent,
+            plan.rows_per_batch,
+            &rows,
+        )
+        .map_err(|d| to_violation(d, run, &dir))?;
 
         acked_rows_checked += outcome.acked * plan.rows_per_batch as u64;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    Ok(Summary { runs: plan.runs, killed, acked_rows_checked })
+    Ok(Summary {
+        runs: plan.runs,
+        killed,
+        acked_rows_checked,
+    })
 }
 
 fn to_violation(defect: verdict::Defect, run: u32, dir: &Path) -> Violation {
     let dir = dir.to_path_buf();
     match defect {
         verdict::Defect::LostAck { batch } => Violation::LostAck { run, batch, dir },
-        verdict::Defect::Torn { batch, present, expected } => {
-            Violation::Torn { run, batch, present, expected, dir }
-        }
+        verdict::Defect::Torn {
+            batch,
+            present,
+            expected,
+        } => Violation::Torn {
+            run,
+            batch,
+            present,
+            expected,
+            dir,
+        },
         verdict::Defect::Phantom { batch } => Violation::Phantom { run, batch, dir },
-        verdict::Defect::Duplicate { batch, row } => Violation::Duplicate { run, batch, row, dir },
+        verdict::Defect::Duplicate { batch, row } => Violation::Duplicate {
+            run,
+            batch,
+            row,
+            dir,
+        },
     }
 }
 
@@ -268,7 +358,11 @@ fn drive_at_ack(child: &mut ChildProcess, k: u64) -> Result<DriveOutcome, String
                 acked += 1;
                 if acked == k {
                     let _ = child.kill();
-                    return Ok(DriveOutcome { killed: true, acked, highest_sent });
+                    return Ok(DriveOutcome {
+                        killed: true,
+                        acked,
+                        highest_sent,
+                    });
                 }
                 writeln!(stdin, "go").map_err(|e| format!("writing go: {e}"))?;
                 stdin.flush().map_err(|e| format!("flushing stdin: {e}"))?;
@@ -277,7 +371,11 @@ fn drive_at_ack(child: &mut ChildProcess, k: u64) -> Result<DriveOutcome, String
             child::Line::Fp(_) | child::Line::Other => {}
         }
     }
-    Ok(DriveOutcome { killed: false, acked, highest_sent })
+    Ok(DriveOutcome {
+        killed: false,
+        acked,
+        highest_sent,
+    })
 }
 
 /// Answers `go` to every ack; kills on the named failpoint's line instead of on an ack.
@@ -297,13 +395,21 @@ fn drive_failpoint(child: &mut ChildProcess) -> Result<DriveOutcome, String> {
             }
             child::Line::Fp(_) => {
                 let _ = child.kill();
-                return Ok(DriveOutcome { killed: true, acked, highest_sent });
+                return Ok(DriveOutcome {
+                    killed: true,
+                    acked,
+                    highest_sent,
+                });
             }
             child::Line::Err(msg) => return Err(msg),
             child::Line::Other => {}
         }
     }
-    Ok(DriveOutcome { killed: false, acked, highest_sent })
+    Ok(DriveOutcome {
+        killed: false,
+        acked,
+        highest_sent,
+    })
 }
 
 /// Not lockstep: a reader thread tracks progress while the main thread sleeps then kills.
@@ -318,7 +424,10 @@ fn drive_random(
     let observed_reader = Arc::clone(&observed);
     let err_reader = Arc::clone(&err_msg);
     let reader = thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
             match child::parse_line(&line) {
                 child::Line::Sent(b) => observed_reader.lock().unwrap().0 = Some(b),
                 child::Line::Ack(_) => observed_reader.lock().unwrap().1 += 1,
@@ -328,14 +437,24 @@ fn drive_random(
         }
     });
 
-    let delay = if max_delay_ms > 0 { rng.range(0, max_delay_ms) } else { 0 };
+    let delay = if max_delay_ms > 0 {
+        rng.range(0, max_delay_ms)
+    } else {
+        0
+    };
     thread::sleep(Duration::from_millis(delay));
     let killed = child.kill().is_ok();
-    reader.join().map_err(|_| "reader thread panicked".to_string())?;
+    reader
+        .join()
+        .map_err(|_| "reader thread panicked".to_string())?;
 
     if let Some(msg) = err_msg.lock().unwrap().take() {
         return Err(msg);
     }
     let (highest_sent, acked) = *observed.lock().unwrap();
-    Ok(DriveOutcome { killed, acked, highest_sent })
+    Ok(DriveOutcome {
+        killed,
+        acked,
+        highest_sent,
+    })
 }

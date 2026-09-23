@@ -3,8 +3,8 @@
 //! reaches the root lockfile or build budget.
 #![deny(unsafe_code)]
 
+pub mod data;
 pub mod duck;
-pub mod gen;
 pub mod suite;
 
 pub use duck::DuckDb;

@@ -3,7 +3,7 @@
 //! prints a markdown report. Args are parsed by hand; no clap.
 #![deny(unsafe_code)]
 
-use adelie_bench::{gen, suite, DuckDb};
+use adelie_bench::{DuckDb, data, suite};
 use adelie_harness::engine::{Engine, EngineError, Outcome};
 
 fn main() {
@@ -29,7 +29,13 @@ struct Args {
 }
 
 fn parse_args(raw: Vec<String>, default_runs: usize, default_seed: u64) -> Args {
-    let mut a = Args { rows: None, spans: None, runs: default_runs, seed: default_seed, hits_path: None };
+    let mut a = Args {
+        rows: None,
+        spans: None,
+        runs: default_runs,
+        seed: default_seed,
+        hits_path: None,
+    };
     let mut it = raw.into_iter();
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -63,11 +69,11 @@ fn smoke() {
     let mut db = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
     suite::run_setup(&mut db, "otel");
 
-    let hits = gen::hits(2_000, 1);
-    gen::load(&mut db, &hits).unwrap_or_else(|e| panic!("loading hits: {e}"));
-    let (spans, logs) = gen::otel(1_000, 1);
-    gen::load(&mut db, &spans).unwrap_or_else(|e| panic!("loading otel.spans: {e}"));
-    gen::load(&mut db, &logs).unwrap_or_else(|e| panic!("loading otel.logs: {e}"));
+    let hits = data::hits(2_000, 1);
+    data::load(&mut db, &hits).unwrap_or_else(|e| panic!("loading hits: {e}"));
+    let (spans, logs) = data::otel(1_000, 1);
+    data::load(&mut db, &spans).unwrap_or_else(|e| panic!("loading otel.spans: {e}"));
+    data::load(&mut db, &logs).unwrap_or_else(|e| panic!("loading otel.logs: {e}"));
 
     let mut failed = false;
     for name in ["clickbench", "otel"] {
@@ -97,8 +103,8 @@ fn clickbench(raw: Vec<String>) {
         Some(path) => load_hits_from_parquet(&mut db, path),
         None => {
             let rows = args.rows.unwrap_or(1_000_000);
-            let table = gen::hits(rows, args.seed);
-            gen::load(&mut db, &table).unwrap_or_else(|e| panic!("loading hits: {e}"));
+            let table = data::hits(rows, args.seed);
+            data::load(&mut db, &table).unwrap_or_else(|e| panic!("loading hits: {e}"));
             rows
         }
     };
@@ -111,11 +117,20 @@ fn clickbench(raw: Vec<String>) {
 /// `CREATE TABLE hits AS SELECT <subset columns> FROM read_parquet(path)`: real ClickBench
 /// data answers the same queries as the generated table, since the columns match by name.
 fn load_hits_from_parquet(db: &mut DuckDb, path: &str) -> usize {
-    let cols: Vec<String> = gen::hits_columns().into_iter().map(|(n, _)| quote_ident(&n)).collect();
+    let cols: Vec<String> = data::hits_columns()
+        .into_iter()
+        .map(|(n, _)| quote_ident(&n))
+        .collect();
     let escaped_path = path.replace('\'', "''");
-    let sql = format!("CREATE TABLE hits AS SELECT {} FROM read_parquet('{escaped_path}')", cols.join(", "));
-    db.run(&sql).unwrap_or_else(|e| panic!("loading {path}: {e}"));
-    let Outcome::Rows(rows) = db.run("SELECT count(*) FROM hits").unwrap_or_else(|e| panic!("counting hits: {e}"))
+    let sql = format!(
+        "CREATE TABLE hits AS SELECT {} FROM read_parquet('{escaped_path}')",
+        cols.join(", ")
+    );
+    db.run(&sql)
+        .unwrap_or_else(|e| panic!("loading {path}: {e}"));
+    let Outcome::Rows(rows) = db
+        .run("SELECT count(*) FROM hits")
+        .unwrap_or_else(|e| panic!("counting hits: {e}"))
     else {
         panic!("count(*) did not return rows")
     };
@@ -135,7 +150,7 @@ fn otel_cmd(raw: Vec<String>) {
     let mut db = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
     suite::run_setup(&mut db, "otel");
 
-    let (spans, logs) = gen::otel(spans_n, args.seed);
+    let (spans, logs) = data::otel(spans_n, args.seed);
     let span_secs = load_timed(&mut db, &spans);
     let log_secs = load_timed(&mut db, &logs);
 
@@ -152,13 +167,19 @@ fn otel_cmd(raw: Vec<String>) {
     println!("{}", suite::markdown(&results));
 }
 
-fn load_timed(db: &mut DuckDb, t: &gen::Table) -> f64 {
-    let elapsed: Result<std::time::Duration, EngineError> = gen::load(db, t);
-    elapsed.unwrap_or_else(|e| panic!("loading {}: {e}", t.name)).as_secs_f64()
+fn load_timed(db: &mut DuckDb, t: &data::Table) -> f64 {
+    let elapsed: Result<std::time::Duration, EngineError> = data::load(db, t);
+    elapsed
+        .unwrap_or_else(|e| panic!("loading {}: {e}", t.name))
+        .as_secs_f64()
 }
 
 fn print_ingest_row(name: &str, rows: usize, secs: f64) {
-    let rate = if secs > 0.0 { rows as f64 / secs } else { f64::INFINITY };
+    let rate = if secs > 0.0 {
+        rows as f64 / secs
+    } else {
+        f64::INFINITY
+    };
     println!("| {name} | {rows} | {secs:.3} | {rate:.0} |");
 }
 

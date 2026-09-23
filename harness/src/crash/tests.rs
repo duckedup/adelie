@@ -5,8 +5,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::verdict::{verdict, Defect};
-use super::{run, CrashTarget, Kill, Plan, Row, Violation};
+use super::verdict::{Defect, verdict};
+use super::{CrashTarget, Kill, Plan, Row, Violation, run};
 
 // ── Journal: a correct write-ahead log ──────────────────────────────────────
 
@@ -35,9 +35,10 @@ fn read_checked_lines(path: &Path) -> io::Result<Vec<Row>> {
     let mut rows = Vec::new();
     for line in data.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let [b, n, cs] = parts.as_slice() else { continue };
-        let (Ok(b), Ok(n), Ok(cs)) = (b.parse::<u64>(), n.parse::<u32>(), cs.parse::<u64>())
-        else {
+        let [b, n, cs] = parts.as_slice() else {
+            continue;
+        };
+        let (Ok(b), Ok(n), Ok(cs)) = (b.parse::<u64>(), n.parse::<u32>(), cs.parse::<u64>()) else {
             continue;
         };
         if cs != fnv1a(b, n) {
@@ -53,7 +54,9 @@ impl CrashTarget for Journal {
 
     fn open(dir: &Path) -> io::Result<Self::Store> {
         fs::create_dir_all(dir)?;
-        Ok(JournalStore { path: dir.join("journal.log") })
+        Ok(JournalStore {
+            path: dir.join("journal.log"),
+        })
     }
 
     fn write(store: &mut Self::Store, batch: &[Row]) -> io::Result<()> {
@@ -63,7 +66,10 @@ impl CrashTarget for Journal {
         let bytes = line.as_bytes();
         let mid = bytes.len() / 2;
 
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&store.path)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)?;
         f.write_all(&bytes[..mid])?;
         super::failpoint("journal.mid_write");
         f.write_all(&bytes[mid..])?;
@@ -103,7 +109,10 @@ impl CrashTarget for AckBeforeWrite {
         store.buffered.extend_from_slice(batch);
         store.batches_written += 1;
         if store.batches_written % 1_000_000 == 0 {
-            let mut f = fs::OpenOptions::new().create(true).append(true).open(&store.path)?;
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&store.path)?;
             for &(b, i) in &store.buffered {
                 writeln!(f, "{b} {i}")?;
             }
@@ -148,11 +157,16 @@ impl CrashTarget for TornWriter {
 
     fn open(dir: &Path) -> io::Result<Self::Store> {
         fs::create_dir_all(dir)?;
-        Ok(TornWriterStore { path: dir.join("rows.log") })
+        Ok(TornWriterStore {
+            path: dir.join("rows.log"),
+        })
     }
 
     fn write(store: &mut Self::Store, batch: &[Row]) -> io::Result<()> {
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&store.path)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.path)?;
         let half = batch.len() / 2;
         for &(b, i) in &batch[..half] {
             writeln!(f, "{b} {i}")?;
@@ -182,7 +196,9 @@ impl CrashTarget for PhantomStore {
     type Store = PhantomStoreStore;
 
     fn open(dir: &Path) -> io::Result<Self::Store> {
-        Ok(PhantomStoreStore { inner: Journal::open(dir)? })
+        Ok(PhantomStoreStore {
+            inner: Journal::open(dir)?,
+        })
     }
 
     fn write(store: &mut Self::Store, batch: &[Row]) -> io::Result<()> {
@@ -202,9 +218,18 @@ impl CrashTarget for PhantomStore {
 #[test]
 #[cfg_attr(miri, ignore)] // spawns and kills a child process
 fn journal_survives_ack_kills() {
-    let plan = Plan { runs: 6, batches: 20, rows_per_batch: 8, seed: 1, kill: Kill::AtAck };
-    let summary = run::<Journal>(concat!(module_path!(), "::journal_survives_ack_kills"), &plan)
-        .expect("journal must survive ack kills");
+    let plan = Plan {
+        runs: 6,
+        batches: 20,
+        rows_per_batch: 8,
+        seed: 1,
+        kill: Kill::AtAck,
+    };
+    let summary = run::<Journal>(
+        concat!(module_path!(), "::journal_survives_ack_kills"),
+        &plan,
+    )
+    .expect("journal must survive ack kills");
     assert_eq!(summary.killed, 6);
 }
 
@@ -236,20 +261,32 @@ fn journal_survives_random_kills() {
         seed: 3,
         kill: Kill::Random { max_delay_ms: 30 },
     };
-    run::<Journal>(concat!(module_path!(), "::journal_survives_random_kills"), &plan)
-        .expect("journal must survive random kills");
+    run::<Journal>(
+        concat!(module_path!(), "::journal_survives_random_kills"),
+        &plan,
+    )
+    .expect("journal must survive random kills");
 }
 
 #[test]
 #[cfg_attr(miri, ignore)] // spawns and kills a child process
 fn ack_before_write_loses_acked_rows() {
-    let plan = Plan { runs: 2, batches: 10, rows_per_batch: 4, seed: 4, kill: Kill::AtAck };
+    let plan = Plan {
+        runs: 2,
+        batches: 10,
+        rows_per_batch: 4,
+        seed: 4,
+        kill: Kill::AtAck,
+    };
     let err = run::<AckBeforeWrite>(
         concat!(module_path!(), "::ack_before_write_loses_acked_rows"),
         &plan,
     )
     .expect_err("acking before writing must be caught");
-    assert!(matches!(err, Violation::LostAck { .. }), "expected LostAck, got {err:?}");
+    assert!(
+        matches!(err, Violation::LostAck { .. }),
+        "expected LostAck, got {err:?}"
+    );
 }
 
 #[test]
@@ -264,30 +301,47 @@ fn torn_writer_is_caught() {
     };
     let err = run::<TornWriter>(concat!(module_path!(), "::torn_writer_is_caught"), &plan)
         .expect_err("a torn batch must be caught");
-    assert!(matches!(err, Violation::Torn { .. }), "expected Torn, got {err:?}");
+    assert!(
+        matches!(err, Violation::Torn { .. }),
+        "expected Torn, got {err:?}"
+    );
 }
 
 #[test]
 #[cfg_attr(miri, ignore)] // spawns and kills a child process
 fn phantom_rows_are_caught() {
-    let plan = Plan { runs: 1, batches: 10, rows_per_batch: 4, seed: 6, kill: Kill::AtAck };
+    let plan = Plan {
+        runs: 1,
+        batches: 10,
+        rows_per_batch: 4,
+        seed: 6,
+        kill: Kill::AtAck,
+    };
     let err = run::<PhantomStore>(concat!(module_path!(), "::phantom_rows_are_caught"), &plan)
         .expect_err("a phantom batch must be caught");
-    assert!(matches!(err, Violation::Phantom { .. }), "expected Phantom, got {err:?}");
+    assert!(
+        matches!(err, Violation::Phantom { .. }),
+        "expected Phantom, got {err:?}"
+    );
 }
 
 // ── Pure tests: verdict directly, no process involved, runs under Miri ─────
 
 #[test]
 fn verdict_clean_input_is_ok() {
-    let rows: Vec<Row> = (0..3u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let rows: Vec<Row> = (0..3u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     assert_eq!(verdict(3, Some(2), 4, &rows), Ok(()));
 }
 
 #[test]
 fn verdict_catches_lost_ack() {
     let rows: Vec<Row> = (0..4u32).map(|i| (1, i)).collect(); // batch 0 acked, missing
-    assert_eq!(verdict(2, Some(1), 4, &rows), Err(Defect::LostAck { batch: 0 }));
+    assert_eq!(
+        verdict(2, Some(1), 4, &rows),
+        Err(Defect::LostAck { batch: 0 })
+    );
 }
 
 #[test]
@@ -295,20 +349,30 @@ fn verdict_torn_beats_lost_for_partial_acked_batch() {
     let rows: Vec<Row> = vec![(0, 0), (0, 1)]; // batch 0 acked, only half present
     assert_eq!(
         verdict(1, Some(0), 4, &rows),
-        Err(Defect::Torn { batch: 0, present: 2, expected: 4 })
+        Err(Defect::Torn {
+            batch: 0,
+            present: 2,
+            expected: 4
+        })
     );
 }
 
 #[test]
 fn verdict_catches_phantom() {
     let rows: Vec<Row> = vec![(0, 0), (5, 0)]; // batch 5 was never sent
-    assert_eq!(verdict(1, Some(0), 1, &rows), Err(Defect::Phantom { batch: 5 }));
+    assert_eq!(
+        verdict(1, Some(0), 1, &rows),
+        Err(Defect::Phantom { batch: 5 })
+    );
 }
 
 #[test]
 fn verdict_catches_duplicate() {
     let rows: Vec<Row> = vec![(0, 0), (0, 0)];
-    assert_eq!(verdict(1, Some(0), 1, &rows), Err(Defect::Duplicate { batch: 0, row: 0 }));
+    assert_eq!(
+        verdict(1, Some(0), 1, &rows),
+        Err(Defect::Duplicate { batch: 0, row: 0 })
+    );
 }
 
 #[test]
@@ -325,6 +389,10 @@ fn verdict_unacked_torn_batch_is_still_caught() {
     let rows: Vec<Row> = vec![(0, 0), (0, 1), (1, 0)];
     assert_eq!(
         verdict(1, Some(1), 2, &rows),
-        Err(Defect::Torn { batch: 1, present: 1, expected: 2 })
+        Err(Defect::Torn {
+            batch: 1,
+            present: 1,
+            expected: 2
+        })
     );
 }

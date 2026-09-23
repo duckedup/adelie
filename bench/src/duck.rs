@@ -1,12 +1,21 @@
 //! `DuckDb`: the `Engine` adapter over an in-memory `duckdb::Connection`.
 
 use adelie_harness::engine::{Engine, EngineError, Outcome, Value};
-use duckdb::types::{TimeUnit, ValueRef};
 use duckdb::Connection;
+use duckdb::types::{TimeUnit, ValueRef};
 
 /// Keywords whose statement returns a result set; anything else goes through `execute_batch`.
-const QUERY_KEYWORDS: &[&str] =
-    &["SELECT", "WITH", "VALUES", "FROM", "EXPLAIN", "SHOW", "DESCRIBE", "SUMMARIZE", "PRAGMA"];
+const QUERY_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "WITH",
+    "VALUES",
+    "FROM",
+    "EXPLAIN",
+    "SHOW",
+    "DESCRIBE",
+    "SUMMARIZE",
+    "PRAGMA",
+];
 
 pub struct DuckDb {
     conn: Connection,
@@ -14,7 +23,9 @@ pub struct DuckDb {
 
 impl DuckDb {
     pub fn new() -> Result<Self, EngineError> {
-        Connection::open_in_memory().map(|conn| DuckDb { conn }).map_err(to_engine_error)
+        Connection::open_in_memory()
+            .map(|conn| DuckDb { conn })
+            .map_err(to_engine_error)
     }
 
     fn run_query(&mut self, sql: &str) -> Result<Outcome, EngineError> {
@@ -44,7 +55,10 @@ impl Engine for DuckDb {
         if is_query(sql) {
             self.run_query(sql)
         } else {
-            self.conn.execute_batch(sql).map(|_| Outcome::Statement).map_err(to_engine_error)
+            self.conn
+                .execute_batch(sql)
+                .map(|_| Outcome::Statement)
+                .map_err(to_engine_error)
         }
     }
 }
@@ -64,7 +78,10 @@ fn is_query(sql: &str) -> bool {
             None => break,
         }
     }
-    let word: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
     let word = word.to_ascii_uppercase();
     QUERY_KEYWORDS.contains(&word.as_str())
 }
@@ -106,7 +123,11 @@ fn to_value(v: ValueRef<'_>) -> Result<Value, EngineError> {
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into_owned()),
         ValueRef::Date32(days) => Value::Text(format_date(days as i64)),
         ValueRef::Timestamp(unit, v) => Value::Text(format_timestamp(unit, v)),
-        other => return Err(EngineError(format!("duckdb: unsupported result type {other:?}"))),
+        other => {
+            return Err(EngineError(format!(
+                "duckdb: unsupported result type {other:?}"
+            )));
+        }
     })
 }
 
@@ -144,7 +165,11 @@ fn format_timestamp(unit: TimeUnit, v: i64) -> String {
     let frac = of_day % 1_000_000;
     let (h, mi, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
     let base = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
-    if frac == 0 { base } else { format!("{base}.{frac:06}") }
+    if frac == 0 {
+        base
+    } else {
+        format!("{base}.{frac:06}")
+    }
 }
 
 #[cfg(test)]
@@ -159,7 +184,9 @@ mod tests {
         let sql = "SELECT 1::TINYINT, 1::HUGEINT, 1.5::DOUBLE, 1.5::DECIMAL(4,1), 'x', NULL, \
                     true, DATE '2024-01-02', TIMESTAMP '2024-01-02 03:04:05', \
                     TIMESTAMP '2024-01-02 03:04:05.5'";
-        let Outcome::Rows(rows) = db.run(sql).unwrap() else { panic!("expected rows") };
+        let Outcome::Rows(rows) = db.run(sql).unwrap() else {
+            panic!("expected rows")
+        };
         assert_eq!(
             rows,
             vec![vec![
@@ -189,7 +216,10 @@ mod tests {
     #[cfg_attr(miri, ignore)] // links bundled DuckDB C++
     fn create_table_is_a_statement() {
         let mut db = DuckDb::new().unwrap();
-        assert_eq!(db.run("CREATE TABLE t (a INT)").unwrap(), Outcome::Statement);
+        assert_eq!(
+            db.run("CREATE TABLE t (a INT)").unwrap(),
+            Outcome::Statement
+        );
     }
 
     #[test]

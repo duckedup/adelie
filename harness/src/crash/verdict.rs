@@ -8,10 +8,21 @@ use super::Row;
 /// A judged defect, before the run/dir context that `crash::run` attaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Defect {
-    LostAck { batch: u64 },
-    Torn { batch: u64, present: usize, expected: usize },
-    Phantom { batch: u64 },
-    Duplicate { batch: u64, row: u32 },
+    LostAck {
+        batch: u64,
+    },
+    Torn {
+        batch: u64,
+        present: usize,
+        expected: usize,
+    },
+    Phantom {
+        batch: u64,
+    },
+    Duplicate {
+        batch: u64,
+        row: u32,
+    },
 }
 
 /// `acked`: batches `0..acked` were acknowledged. `highest_sent`: the highest batch the
@@ -41,7 +52,11 @@ pub(super) fn verdict(
             continue;
         }
         if present != expected {
-            return Err(Defect::Torn { batch, present, expected });
+            return Err(Defect::Torn {
+                batch,
+                present,
+                expected,
+            });
         }
     }
 

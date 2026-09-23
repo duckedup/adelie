@@ -15,7 +15,9 @@ fn corpus_files() -> Vec<PathBuf> {
 
 /// Recurses so the corpus can grow subdirectories later without this test changing.
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -29,11 +31,18 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
 #[test]
 fn corpus_parses() {
     let files = corpus_files();
-    assert!(files.len() >= 8, "expected at least 8 .slt files, found {}", files.len());
+    assert!(
+        files.len() >= 8,
+        "expected at least 8 .slt files, found {}",
+        files.len()
+    );
     for path in &files {
-        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let src =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let records = parse(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        let has_query = records.iter().any(|r| matches!(r.directive, Directive::Query { .. }));
+        let has_query = records
+            .iter()
+            .any(|r| matches!(r.directive, Directive::Query { .. }));
         assert!(has_query, "{}: no query record", path.display());
         // E6: run_file(&mut adelie_engine, path) replaces this parse-only check.
     }

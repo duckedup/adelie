@@ -18,26 +18,71 @@ pub struct Table {
 /// The rare token guaranteed to appear in at least one `otel.logs` body per call to `otel`.
 pub const LOG_NEEDLE: &str = "zzq_needle_7f3a";
 
-const URL_VOCAB: &[&str] =
-    &["/", "/index.html", "/product", "/category", "/search", "/about", "/contact", "/blog", "/cart", "/checkout"];
+const URL_VOCAB: &[&str] = &[
+    "/",
+    "/index.html",
+    "/product",
+    "/category",
+    "/search",
+    "/about",
+    "/contact",
+    "/blog",
+    "/cart",
+    "/checkout",
+];
 const TITLE_VOCAB: &[&str] = &[
-    "Home", "Product Page", "Category", "Search Results", "About Us", "Contact", "Blog Post", "Cart", "Checkout",
+    "Home",
+    "Product Page",
+    "Category",
+    "Search Results",
+    "About Us",
+    "Contact",
+    "Blog Post",
+    "Cart",
+    "Checkout",
     "Login",
 ];
-const REFERER_VOCAB: &[&str] =
-    &["", "https://www.google.com/", "https://www.bing.com/", "https://duckduckgo.com/", "https://example.com/"];
+const REFERER_VOCAB: &[&str] = &[
+    "",
+    "https://www.google.com/",
+    "https://www.bing.com/",
+    "https://duckduckgo.com/",
+    "https://example.com/",
+];
 const PHONE_VOCAB: &[&str] = &["", "iPhone", "Galaxy S9", "Pixel 4", "Nokia 3310"];
-const SEARCH_PHRASE_VOCAB: &[&str] =
-    &["rust programming", "duckdb tutorial", "clickbench", "sql analytics", "columnar database"];
+const SEARCH_PHRASE_VOCAB: &[&str] = &[
+    "rust programming",
+    "duckdb tutorial",
+    "clickbench",
+    "sql analytics",
+    "columnar database",
+];
 const HOT_COUNTER_IDS: &[i64] = &[1, 2, 3, 5, 8];
 
-const SERVICE_VOCAB: &[&str] =
-    &["frontend", "api-gateway", "auth-service", "orders-service", "payments-service", "inventory-service"];
-const SPAN_NAME_VOCAB: &[&str] = &["GET /", "POST /orders", "GET /users/{id}", "db query", "cache lookup", "rpc call"];
+const SERVICE_VOCAB: &[&str] = &[
+    "frontend",
+    "api-gateway",
+    "auth-service",
+    "orders-service",
+    "payments-service",
+    "inventory-service",
+];
+const SPAN_NAME_VOCAB: &[&str] = &[
+    "GET /",
+    "POST /orders",
+    "GET /users/{id}",
+    "db query",
+    "cache lookup",
+    "rpc call",
+];
 const ROUTE_VOCAB: &[&str] = &["/orders", "/users", "/payments", "/inventory", "/health"];
 const SEVERITY_VOCAB: &[&str] = &["INFO", "WARN", "ERROR", "DEBUG"];
-const LOG_TEMPLATES: &[&str] =
-    &["request completed id={n}", "cache miss key={n}", "retrying upstream call {n}", "queue depth is {n}"];
+const LOG_TEMPLATES: &[&str] = &[
+    "request completed id={n}",
+    "cache miss key={n}",
+    "retrying upstream call {n}",
+    "queue depth is {n}",
+];
 
 /// A ClickBench-shaped `hits` table: a real subset of columns and names, skewed like the
 /// original data, so `--hits <parquet>` real data answers the same queries.
@@ -48,7 +93,11 @@ pub fn hits(rows: usize, seed: u64) -> Table {
     for i in 0..rows {
         out.push(hits_row(&mut rng, i as i64));
     }
-    Table { name: "hits".to_string(), columns, rows: out }
+    Table {
+        name: "hits".to_string(),
+        columns,
+        rows: out,
+    }
 }
 
 /// The `hits` schema: real ClickBench column names and types, so `--hits <parquet>` real
@@ -83,14 +132,24 @@ fn pick<'a, T>(rng: &mut SplitMix64, vocab: &'a [T]) -> &'a T {
 }
 
 fn hits_row(rng: &mut SplitMix64, i: i64) -> Vec<Value> {
-    let counter_id =
-        if rng.f64() < 0.6 { *pick(rng, HOT_COUNTER_IDS) } else { rng.range(1, 1000) as i64 };
+    let counter_id = if rng.f64() < 0.6 {
+        *pick(rng, HOT_COUNTER_IDS)
+    } else {
+        rng.range(1, 1000) as i64
+    };
     let day_offset = rng.range(0, 3650) as i64;
     let seconds = rng.range(0, 86_400) as i64;
     let is_refresh = if rng.f64() < 0.1 { 1 } else { 0 };
-    let adv_engine_id = if rng.f64() < 0.95 { 0 } else { rng.range(1, 20) as i64 };
-    let search_phrase =
-        if rng.f64() < 0.8 { String::new() } else { pick(rng, SEARCH_PHRASE_VOCAB).to_string() };
+    let adv_engine_id = if rng.f64() < 0.95 {
+        0
+    } else {
+        rng.range(1, 20) as i64
+    };
+    let search_phrase = if rng.f64() < 0.8 {
+        String::new()
+    } else {
+        pick(rng, SEARCH_PHRASE_VOCAB).to_string()
+    };
     vec![
         Value::Int(rng.next_u64() as i64),
         Value::Int(counter_id),
@@ -169,12 +228,23 @@ pub fn otel(spans: usize, seed: u64) -> (Table, Table) {
     }
     if !needle_used {
         if let Some(last) = log_rows.last_mut() {
-            last[5] = Value::Text(format!("{} {LOG_NEEDLE}", LOG_TEMPLATES[0].replace("{n}", "0")));
+            last[5] = Value::Text(format!(
+                "{} {LOG_NEEDLE}",
+                LOG_TEMPLATES[0].replace("{n}", "0")
+            ));
         }
     }
     (
-        Table { name: "otel.spans".to_string(), columns: otel_spans_columns(), rows: span_rows },
-        Table { name: "otel.logs".to_string(), columns: otel_logs_columns(), rows: log_rows },
+        Table {
+            name: "otel.spans".to_string(),
+            columns: otel_spans_columns(),
+            rows: span_rows,
+        },
+        Table {
+            name: "otel.logs".to_string(),
+            columns: otel_logs_columns(),
+            rows: log_rows,
+        },
     )
 }
 
@@ -227,7 +297,11 @@ fn format_date(day_offset: i64) -> String {
 
 fn format_datetime(day_offset: i64, seconds_of_day: i64) -> String {
     let (y, mo, d) = civil_from_days(day_offset);
-    let (h, mi, s) = (seconds_of_day / 3600, (seconds_of_day % 3600) / 60, seconds_of_day % 60);
+    let (h, mi, s) = (
+        seconds_of_day / 3600,
+        (seconds_of_day % 3600) / 60,
+        seconds_of_day % 60,
+    );
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
@@ -261,8 +335,16 @@ fn render_literal(v: &Value, sql_type: &str) -> String {
 /// Loads `t` into `engine`: `CREATE TABLE`, then multi-row `INSERT` in chunks of 1000 rows.
 /// Engine-neutral; adelie takes the same path at E6. Returns only the insert time.
 pub fn load(engine: &mut dyn Engine, t: &Table) -> Result<Duration, EngineError> {
-    let col_defs: Vec<String> = t.columns.iter().map(|(n, ty)| format!("{} {ty}", quote_ident(n))).collect();
-    let create = format!("CREATE TABLE {} ({})", quote_table_name(&t.name), col_defs.join(", "));
+    let col_defs: Vec<String> = t
+        .columns
+        .iter()
+        .map(|(n, ty)| format!("{} {ty}", quote_ident(n)))
+        .collect();
+    let create = format!(
+        "CREATE TABLE {} ({})",
+        quote_table_name(&t.name),
+        col_defs.join(", ")
+    );
     run_statement(engine, &create)?;
 
     let col_names: Vec<String> = t.columns.iter().map(|(n, _)| quote_ident(n)).collect();
@@ -271,8 +353,11 @@ pub fn load(engine: &mut dyn Engine, t: &Table) -> Result<Duration, EngineError>
         let rows: Vec<String> = chunk
             .iter()
             .map(|row| {
-                let cells: Vec<String> =
-                    row.iter().zip(&t.columns).map(|(v, (_, ty))| render_literal(v, ty)).collect();
+                let cells: Vec<String> = row
+                    .iter()
+                    .zip(&t.columns)
+                    .map(|(v, (_, ty))| render_literal(v, ty))
+                    .collect();
                 format!("({})", cells.join(", "))
             })
             .collect();
@@ -314,10 +399,16 @@ mod tests {
     #[test]
     fn otel_spans_per_trace_in_range() {
         let (spans, _) = otel(500, 3);
-        let trace_col = spans.columns.iter().position(|(n, _)| n == "trace_id").unwrap();
+        let trace_col = spans
+            .columns
+            .iter()
+            .position(|(n, _)| n == "trace_id")
+            .unwrap();
         let mut counts = std::collections::HashMap::new();
         for row in &spans.rows {
-            let Value::Text(id) = &row[trace_col] else { panic!("trace_id is text") };
+            let Value::Text(id) = &row[trace_col] else {
+                panic!("trace_id is text")
+            };
             *counts.entry(id.clone()).or_insert(0u32) += 1;
         }
         // The last trace may be cut short by the `spans` budget; check every other one.
@@ -332,7 +423,11 @@ mod tests {
     fn every_log_needle_appears_at_least_once() {
         let (_, logs) = otel(1000, 9);
         let body_col = logs.columns.iter().position(|(n, _)| n == "body").unwrap();
-        assert!(logs.rows.iter().any(|r| matches!(&r[body_col], Value::Text(s) if s.contains(LOG_NEEDLE))));
+        assert!(
+            logs.rows
+                .iter()
+                .any(|r| matches!(&r[body_col], Value::Text(s) if s.contains(LOG_NEEDLE)))
+        );
     }
 
     #[test]

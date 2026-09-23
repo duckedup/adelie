@@ -26,11 +26,21 @@ pub fn diff(a: &mut dyn Engine, b: &mut dyn Engine, records: &[Record]) -> Repor
 
 /// Skipped if a `skipif` names either engine, or an `onlyif` names one that is not in the pair.
 fn is_skipped(conditions: &[Condition], a_name: &str, b_name: &str) -> bool {
-    conditions.iter().any(|c| matches!(c, Condition::SkipIf(n) if n == a_name || n == b_name))
-        || conditions.iter().any(|c| matches!(c, Condition::OnlyIf(n) if n != a_name && n != b_name))
+    conditions
+        .iter()
+        .any(|c| matches!(c, Condition::SkipIf(n) if n == a_name || n == b_name))
+        || conditions
+            .iter()
+            .any(|c| matches!(c, Condition::OnlyIf(n) if n != a_name && n != b_name))
 }
 
-fn check(a: &mut dyn Engine, b: &mut dyn Engine, a_name: &str, b_name: &str, record: &Record) -> Result<(), Failure> {
+fn check(
+    a: &mut dyn Engine,
+    b: &mut dyn Engine,
+    a_name: &str,
+    b_name: &str,
+    record: &Record,
+) -> Result<(), Failure> {
     let ra = a.run(&record.sql);
     let rb = b.run(&record.sql);
     match (&record.directive, ra, rb) {
@@ -43,7 +53,12 @@ fn check(a: &mut dyn Engine, b: &mut dyn Engine, a_name: &str, b_name: &str, rec
             if lines_match(*sort, &ra_lines, &rb_lines) {
                 Ok(())
             } else {
-                Err(fail(record, a_name, &ra_lines.join("\n"), &rb_lines.join("\n")))
+                Err(fail(
+                    record,
+                    a_name,
+                    &ra_lines.join("\n"),
+                    &rb_lines.join("\n"),
+                ))
             }
         }
         (_, Ok(_), Ok(_)) => Ok(()),
@@ -75,8 +90,10 @@ mod tests {
 
     #[test]
     fn agreeing_fakes_pass() {
-        let mut a = FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
-        let mut b = FakeEngine::new("b").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
+        let mut a =
+            FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
+        let mut b =
+            FakeEngine::new("b").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
         let records = parse("query I\nSELECT 1\n----\nignored").unwrap();
         let report = diff(&mut a, &mut b, &records);
         assert!(report.ok());
@@ -85,8 +102,10 @@ mod tests {
 
     #[test]
     fn differing_query_reports_that_record() {
-        let mut a = FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
-        let mut b = FakeEngine::new("b").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(2)]])));
+        let mut a =
+            FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
+        let mut b =
+            FakeEngine::new("b").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(2)]])));
         let records = parse("query I\nSELECT 1\n----\nignored").unwrap();
         let report = diff(&mut a, &mut b, &records);
         assert_eq!(report.failures.len(), 1);

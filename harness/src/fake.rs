@@ -18,7 +18,10 @@ pub struct FakeEngine {
 
 impl FakeEngine {
     pub fn new(name: &str) -> Self {
-        FakeEngine { name: name.to_string(), answers: HashMap::new() }
+        FakeEngine {
+            name: name.to_string(),
+            answers: HashMap::new(),
+        }
     }
 
     /// Keyed by SQL with whitespace runs collapsed and trimmed.
@@ -49,7 +52,10 @@ mod tests {
     fn unknown_sql_errors() {
         let mut fake = FakeEngine::new("fake");
         let err = fake.run("select 1").unwrap_err();
-        assert_eq!(err, EngineError("fake: no answer for `select 1`".to_string()));
+        assert_eq!(
+            err,
+            EngineError("fake: no answer for `select 1`".to_string())
+        );
     }
 
     #[test]

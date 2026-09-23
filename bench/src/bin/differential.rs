@@ -32,7 +32,12 @@ fn main() {
         let mut engine = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
         match adelie_harness::slt::run_file(&mut engine, path) {
             Ok(report) if report.ok() => {
-                println!("ok  {}  (passed {}, skipped {})", path.display(), report.passed, report.skipped);
+                println!(
+                    "ok  {}  (passed {}, skipped {})",
+                    path.display(),
+                    report.passed,
+                    report.skipped
+                );
             }
             Ok(report) => {
                 any_failed = true;
@@ -63,7 +68,9 @@ fn collect_slt_files(root: &Path, out: &mut Vec<PathBuf>) {
         }
         return;
     }
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_dir() {

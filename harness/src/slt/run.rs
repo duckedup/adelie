@@ -42,9 +42,16 @@ fn check(engine: &mut dyn Engine, record: &Record) -> Result<(), Failure> {
             Ok(_) => Ok(()),
             Err(e) => Err(fail(record, "ok", &format!("error: {e}"))),
         },
-        Directive::StatementError(sub) | Directive::QueryError(sub) => check_error(engine, record, sub.as_deref()),
+        Directive::StatementError(sub) | Directive::QueryError(sub) => {
+            check_error(engine, record, sub.as_deref())
+        }
         Directive::QueryHashUnsupported => Err(fail(record, "", "hash results unsupported")),
-        Directive::Query { types, sort, expected, .. } => match engine.run(&record.sql) {
+        Directive::Query {
+            types,
+            sort,
+            expected,
+            ..
+        } => match engine.run(&record.sql) {
             Err(e) => Err(fail(record, &expected.join("\n"), &format!("error: {e}"))),
             Ok(Outcome::Statement) => Err(fail(record, &expected.join("\n"), "expected rows")),
             Ok(Outcome::Rows(rows)) => {
@@ -80,7 +87,12 @@ fn check_error(engine: &mut dyn Engine, record: &Record, sub: Option<&str>) -> R
 }
 
 fn fail(record: &Record, expected: &str, actual: &str) -> Failure {
-    Failure { line: record.line, sql: record.sql.clone(), expected: expected.to_string(), actual: actual.to_string() }
+    Failure {
+        line: record.line,
+        sql: record.sql.clone(),
+        expected: expected.to_string(),
+        actual: actual.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -92,7 +104,10 @@ mod tests {
 
     #[test]
     fn correct_answer_passes() {
-        let mut fake = FakeEngine::new("fake").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![crate::engine::Value::Int(1)]])));
+        let mut fake = FakeEngine::new("fake").answer(
+            "SELECT 1",
+            Ok(Outcome::Rows(vec![vec![crate::engine::Value::Int(1)]])),
+        );
         let records = parse("query I\nSELECT 1\n----\n1").unwrap();
         let report = run(&mut fake, &records);
         assert!(report.ok());
@@ -101,7 +116,10 @@ mod tests {
 
     #[test]
     fn wrong_answer_fails_at_the_right_line() {
-        let mut fake = FakeEngine::new("fake").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![crate::engine::Value::Int(2)]])));
+        let mut fake = FakeEngine::new("fake").answer(
+            "SELECT 1",
+            Ok(Outcome::Rows(vec![vec![crate::engine::Value::Int(2)]])),
+        );
         let records = parse("query I\nSELECT 1\n----\n1").unwrap();
         let report = run(&mut fake, &records);
         assert_eq!(report.failures.len(), 1);
@@ -125,7 +143,8 @@ mod tests {
 
     #[test]
     fn statement_error_substring_matches_case_insensitively() {
-        let mut fake = FakeEngine::new("fake").answer("bad", Err(EngineError("a FOO happened".to_string())));
+        let mut fake =
+            FakeEngine::new("fake").answer("bad", Err(EngineError("a FOO happened".to_string())));
         let records = parse("statement error foo\nbad").unwrap();
         assert!(run(&mut fake, &records).ok());
     }

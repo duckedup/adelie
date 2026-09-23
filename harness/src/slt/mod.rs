@@ -45,7 +45,12 @@ pub enum Directive {
     StatementOk,
     /// `None` matches any error; `Some(s)` requires a case-insensitive substring match.
     StatementError(Option<String>),
-    Query { types: Vec<ColType>, sort: SortMode, label: Option<String>, expected: Vec<String> },
+    Query {
+        types: Vec<ColType>,
+        sort: SortMode,
+        label: Option<String>,
+        expected: Vec<String>,
+    },
     QueryError(Option<String>),
     /// A `N values hashing to <md5>` expected block: unsupported, always a failure.
     QueryHashUnsupported,

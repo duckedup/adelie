@@ -18,7 +18,11 @@ fn render_cell(value: &Value, ty: ColType) -> String {
             return "NaN".to_string();
         }
         if f.is_infinite() {
-            return if *f > 0.0 { "inf".to_string() } else { "-inf".to_string() };
+            return if *f > 0.0 {
+                "inf".to_string()
+            } else {
+                "-inf".to_string()
+            };
         }
     }
     match value {
@@ -32,7 +36,11 @@ fn render_cell(value: &Value, ty: ColType) -> String {
             ColType::Int => (f.trunc() as i64).to_string(),
             ColType::Real => {
                 let s = format!("{f:.3}");
-                if s == "-0.000" { "0.000".to_string() } else { s }
+                if s == "-0.000" {
+                    "0.000".to_string()
+                } else {
+                    s
+                }
             }
             ColType::Text => format!("{f}"),
         },
@@ -84,7 +92,10 @@ mod tests {
 
     #[test]
     fn negative_zero_real_is_positive() {
-        assert_eq!(render_cell(&Value::Float(-0.0000001), ColType::Real), "0.000");
+        assert_eq!(
+            render_cell(&Value::Float(-0.0000001), ColType::Real),
+            "0.000"
+        );
     }
 
     #[test]
@@ -98,14 +109,26 @@ mod tests {
 
     #[test]
     fn text_renders_per_column() {
-        assert_eq!(render_cell(&Value::Text("hi".to_string()), ColType::Int), "hi");
-        assert_eq!(render_cell(&Value::Text("hi".to_string()), ColType::Real), "hi");
-        assert_eq!(render_cell(&Value::Text("hi".to_string()), ColType::Text), "hi");
+        assert_eq!(
+            render_cell(&Value::Text("hi".to_string()), ColType::Int),
+            "hi"
+        );
+        assert_eq!(
+            render_cell(&Value::Text("hi".to_string()), ColType::Real),
+            "hi"
+        );
+        assert_eq!(
+            render_cell(&Value::Text("hi".to_string()), ColType::Text),
+            "hi"
+        );
     }
 
     #[test]
     fn empty_text_in_text_column() {
-        assert_eq!(render_cell(&Value::Text(String::new()), ColType::Text), "(empty)");
+        assert_eq!(
+            render_cell(&Value::Text(String::new()), ColType::Text),
+            "(empty)"
+        );
         assert_eq!(render_cell(&Value::Text(String::new()), ColType::Int), "");
     }
 
