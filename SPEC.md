@@ -236,9 +236,11 @@ unit of pruning and of parallel work).
   adaptive (§16.2).
 
 **Manifest.** The one mutable object: the live segment set per table, each segment's partition,
-row count, and column summary, the table schemas, and a monotonic version. It is CRC-checked
-and published by write-to-temp, fsync, rename, fsync-directory. Publishing a manifest is the
-commit point for every change.
+row count, column summary, commit sequence, and side files (derived per-segment state such
+as a deletion vector, which a reader must not ignore), each table's schema, engine, and
+recorded tombstones, a garbage list of segments awaiting deletion, and a monotonic version. It is
+CRC-checked and published by write-to-temp, fsync, rename, fsync-directory. Publishing a
+manifest is the commit point for every change. Its format is D0009.
 
 **Format rule.** On-disk formats are additive only. A new encoding or manifest field must not
 change how existing bytes are read. A version bump is one-way and recorded in a decision.
@@ -272,8 +274,10 @@ partitions.
 
 **Compaction.** Small segments are merged into larger ones per partition (tiered by size and
 age), re-sorted by the sort key, tombstones applied, derived indexes rebuilt. Compaction
-publishes one manifest swapping inputs for outputs; old files are deleted only after no reader
-can still hold a manifest naming them.
+publishes one manifest swapping inputs for outputs. A replaced file is deleted only when no
+snapshot in the writer's process names it and a grace period (default 5 minutes) has passed. A
+reader process is protected by that grace alone: a scan from a manifest older than the grace
+can fail with a snapshot-expired error, and the reader refreshes (D0009).
 
 **Concurrency.** One writer process per store (the `lock` file). Any number of reader processes
 open a manifest snapshot and read without locks. A reader refreshes by re-reading the manifest.
@@ -654,10 +658,11 @@ guardrails (§11), not a separate feature set.
 
 ---
 
-## 18. Table engines (proposed)
+## 18. Table engines
 
 A table's **engine** decides its layout and what compaction does to its rows. adelie, nidus,
 and a transactional store share one core and differ only in engines. Tracked by `adelie-goi`.
+The boundary and `append` are built (E4, D0009); the other engines are proposed.
 
 **The split.** Modelled on PostgreSQL's table access methods, not MySQL's storage engines.
 
@@ -716,11 +721,14 @@ afterwards without a format version bump.
    `latest` needs no per-row version: one flush is one commit, and duplicates of a key within
    a flush are resolved at flush time.
 
-**The engine boundary is fixed with the store** (E4), where commits, compaction, and scans are
-built. An engine supplies: flush (buffered rows to segments), its merge policy (compaction
-inputs to outputs), scan resolution over unmerged segments, and optional index builders. The
-core keeps the manifest, commits and their conflict check, snapshots, retention, and the
-planner.
+**The engine boundary is fixed with the store** (E4, D0009). An engine supplies: flush
+(buffered rows to segments), its merge policy (which live segments to compact together), merge
+(compaction inputs to outputs), scan resolution over unmerged segments, and optional index
+builders. The core keeps the manifest, commits and their conflict check, snapshots, garbage
+collection, retention, and the planner. The core also validates every merge plan: a merge never
+spans a tombstone's commit sequence, because its output takes the highest input sequence.
+A commit conflicts only per table, when it removes a segment that is no longer live or creates a
+table that exists, so appends never conflict.
 
 **Consequences, stated plainly.**
 

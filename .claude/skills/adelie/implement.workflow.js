@@ -75,10 +75,11 @@ BLUEPRINT (implement exactly this, nothing outside its scope):
 ${spec.content}
 
 Rules:
-- Follow AGENTS.md and .claude/rules/ (rust-style.md is the one for src/). Comments cap at 3
-  lines. Errors are anyhow. On-disk encoding is little-endian, length-prefixed and CRC32-checked.
-  An Edit or Write of a .rs file runs those two detectors as a hook, so a violation blocks you
-  at the edit rather than at review.
+- Follow AGENTS.md and match the surrounding code. Comments cap at 3 lines. Errors are
+  hand-written enums with Display (src/segment/error.rs), never anyhow or thiserror: the crate
+  has zero dependencies (D0004). On-disk encoding is little-endian, length-prefixed and
+  CRC32C-checked (D0008). An Edit or Write of a .rs file runs .claude/hooks/law-check, which
+  blocks new \`unsafe\` and a Miri ignore with no stated reason at the edit, not at review.
 - Only touch files under this blueprint's scope (${spec.dir}). Another agent owns the rest.
 - Do NOT commit your own work, do NOT switch branches, do NOT push. (The upstream commit
   above, if you were given one, is the sole exception and is bookkeeping only.)
