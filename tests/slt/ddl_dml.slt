@@ -1,0 +1,35 @@
+# Pins CREATE TABLE, DROP TABLE, INSERT ... SELECT, DELETE ... WHERE, then a query against a
+# dropped table.
+# SPEC §8: CREATE TABLE / DROP TABLE, INSERT ... SELECT, DELETE ... WHERE.
+
+statement ok
+CREATE TABLE src (a INTEGER)
+
+statement ok
+INSERT INTO src VALUES (1), (2), (3)
+
+statement ok
+CREATE TABLE dst (a INTEGER)
+
+statement ok
+INSERT INTO dst SELECT a FROM src WHERE a > 1
+
+query I rowsort
+SELECT a FROM dst
+----
+2
+3
+
+statement ok
+DELETE FROM dst WHERE a = 2
+
+query I
+SELECT a FROM dst
+----
+3
+
+statement ok
+DROP TABLE dst
+
+statement error
+SELECT a FROM dst

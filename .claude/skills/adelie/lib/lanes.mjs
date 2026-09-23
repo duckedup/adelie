@@ -2,21 +2,27 @@
 // commands: every ci.yml job runs on every change (there are no per-step lane guards), so
 // the question is "does anything in CI read this file", not "what do I run".
 
-// ci.yml job ids. The cargo jobs run over the whole crate, so any Rust input, and the
-// workflow itself, is exercised by all of them. checker-laws reads every PR diff;
-// checker-selftest runs the skill's fixture suite.
+// ci.yml job ids, in the workflow's own order. The cargo jobs run over the whole crate, so
+// any Rust input, and the workflow itself, is exercised by all of them. `bench` is separate:
+// it builds the quarantined bench/ workspace only (D0006), never the RUST_JOBS. checker-laws
+// reads every PR diff; checker-selftest runs the skill's fixture suite.
 export const RUST_JOBS = ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri']
-export const JOB_IDS = [...RUST_JOBS, 'checker-selftest', 'checker-laws']
+export const JOB_IDS = [...RUST_JOBS, 'bench', 'checker-selftest', 'checker-laws']
 
 const RUST = [
   /^src\//, /^tests\//, /^benches\//, /^examples\//, /^build\.rs$/,
   /^Cargo\.(toml|lock)$/, /^rust-toolchain\.toml$/, /^\.cargo\//,
-  /^\.github\/workflows\//,
+  /^\.github\/workflows\//, /^harness\//,
 ]
+// bench's own sources, its path dependency on harness/, the corpus it runs differential over,
+// and its workflow — the only paths the `bench` job reads. Not in RUST_JOBS: that is the
+// quarantine (D0006). Once adelie implements Engine (E6), src/ must join this list too.
+const BENCH = [/^bench\//, /^harness\//, /^tests\/slt\//, /^\.github\/workflows\/ci\.yml$/]
 const SKILL = [/^\.claude\/skills\/adelie\/(lib|bin)\//, /^\.claude\/hooks\//, /^\.github\/workflows\/ci\.yml$/]
 
 export const CI_JOBS = {
   ...Object.fromEntries(RUST_JOBS.map(j => [j, RUST])),
+  bench: BENCH,
   'checker-selftest': SKILL,
   'checker-laws': [/./],
 }
@@ -55,7 +61,9 @@ const UNEXERCISED = [
   },
 ]
 
-const isRust = f => RUST.some(re => re.test(f))
+// bench/ is kind 'rust' too, just not a RUST_JOBS input: jobsFor still gives it only
+// ['bench', 'checker-laws'], since CI_JOBS.bench (not RUST) is what actually matches it.
+const isRust = f => RUST.some(re => re.test(f)) || BENCH.some(re => re.test(f))
 
 export function lanes(paths) {
   const files = (paths || []).filter(Boolean)

@@ -73,10 +73,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
       - name: lean library build (--no-default-features)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
       - name: default build
         if: ${{ !cancelled() }}
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -94,10 +94,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-test-
       - name: lean library build (--no-default-features)
-        run: cargo test --no-default-features
+        run: cargo test --workspace --no-default-features
       - name: default build
         if: ${{ !cancelled() }}
-        run: cargo test
+        run: cargo test --workspace
 
   release:
     runs-on: ubuntu-latest
@@ -142,7 +142,39 @@ jobs:
       - name: Test with Miri
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
-        run: cargo miri test --no-default-features
+        run: cargo miri test --workspace --no-default-features
+
+  # DuckDB differential and benchmark smoke. bench/ is its own workspace (D0006): the bundled
+  # C++ build happens only here, never in the root lockfile or the build budget. --release
+  # throughout so one profile of DuckDB is built and cached, not two.
+  bench:
+    name: bench (DuckDB differential)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: bench
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            bench/target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('bench/Cargo.lock', 'bench/Cargo.toml', 'harness/**') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+      - run: cargo fmt -- --check
+      - run: cargo test --release --locked
+      - name: Differential over the sqllogictest corpus
+        run: cargo run --release --locked --bin differential -- ../tests/slt
+      - name: Benchmark smoke (every query executes)
+        run: cargo run --release --locked --bin bench -- smoke
 
   # The skill's detectors: pure fixtures, no repo state, no network. Nothing else runs them,
   # so without this a PR could delete a case and go green.

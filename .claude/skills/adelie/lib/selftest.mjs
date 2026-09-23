@@ -245,10 +245,31 @@ test('lanes: an empty scope does not read like a docs-only change', () => {
   eq(empty === formatLanes(lanes(['LICENSE'])), false, 'distinguishable')
 })
 
+test('lanes: bench/ maps to the bench job only, not build-budget — that is the quarantine', () => {
+  const r = lanes(['bench/src/duck.rs'])
+  eq(r.jobs, ['bench', 'checker-laws'], 'jobs')
+  eq(r.unmatched, [], 'not unmapped')
+  eq(r.jobs.includes('build-budget'), false, 'build-budget stays clean of bench')
+})
+
+test('lanes: harness/ hits every RUST job plus bench, its own path dependency', () => {
+  const r = lanes(['harness/src/slt/run.rs'])
+  eq(r.jobs, [...RUST_JOBS, 'bench', 'checker-laws'], 'jobs')
+})
+
+test('lanes: the slt corpus hits every RUST job plus bench, which differentials over it', () => {
+  const r = lanes(['tests/slt/select.slt'])
+  eq(r.jobs, [...RUST_JOBS, 'bench', 'checker-laws'], 'jobs')
+})
+
 // ── ci-guard ───────────────────────────────────────────────────────────────
 
 test('ci-guard: the job ids are exactly ci.yml\'s', () => {
-  eq(Object.keys(CI_JOBS), ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri', 'checker-selftest', 'checker-laws'], 'ids')
+  eq(Object.keys(CI_JOBS), ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri', 'bench', 'checker-selftest', 'checker-laws'], 'ids')
+})
+
+test('ci-guard: a src-only change does not need bench today — that is the quarantine', () => {
+  eq(ciGuard('bench', ['src/lib.rs']).run, false, 'no bench for src/ yet')
 })
 
 test('ci-guard: a docs-only change skips every cargo job and the selftest, not the laws', () => {

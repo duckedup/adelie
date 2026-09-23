@@ -8,11 +8,11 @@ fmt-check:
 
 # Lint with clippy, deny all warnings (lean library build)
 lint:
-    cargo clippy --all-targets --no-default-features -- -D warnings
+    cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
 # Run all tests (lean library build)
 test:
-    cargo test --no-default-features
+    cargo test --workspace --no-default-features
 
 # Debug build
 build:
@@ -24,7 +24,15 @@ release:
 
 # Undefined-behaviour check (nightly)
 miri:
-    MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --no-default-features
+    MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --workspace --no-default-features
+
+# sqllogictest corpus against DuckDB (builds bench/, which bundles DuckDB: slow first time)
+slt-duckdb:
+    cd bench && cargo run --release --bin differential -- ../tests/slt
+
+# Benchmarks: just bench smoke | just bench clickbench --rows 1000000 | just bench otel --spans 1000000
+bench *ARGS:
+    cd bench && cargo run --release --bin bench -- {{ARGS}}
 
 # Dependency tree
 deps:

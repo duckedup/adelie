@@ -1,0 +1,35 @@
+# Pins INNER and LEFT equi-joins, a join with an unmatched row, and a join plus group by.
+# SPEC §8: joins (INNER and LEFT equi-joins).
+
+statement ok
+CREATE TABLE customers (id INTEGER, name TEXT)
+
+statement ok
+INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')
+
+statement ok
+CREATE TABLE orders (id INTEGER, cust_id INTEGER, amt INTEGER)
+
+statement ok
+INSERT INTO orders VALUES (1, 1, 100), (2, 1, 50), (3, 2, 75)
+
+query TI rowsort
+SELECT c.name, o.amt FROM customers c INNER JOIN orders o ON c.id = o.cust_id
+----
+Alice 100
+Alice 50
+Bob 75
+
+query TI rowsort
+SELECT c.name, o.amt FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
+----
+Alice 100
+Alice 50
+Bob 75
+Carol NULL
+
+query TII rowsort
+SELECT c.name, count(*), sum(o.amt) FROM customers c INNER JOIN orders o ON c.id = o.cust_id GROUP BY c.name
+----
+Alice 2 150
+Bob 1 75
