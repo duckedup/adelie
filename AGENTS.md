@@ -2,7 +2,7 @@
 
 adelie: a pure-Rust columnar analytics store with SQL. This is the one instruction file for
 every agent (Claude Code, Codex, Cursor); there is no CLAUDE.md. Why a rule exists lives in
-`decisions/` (the `D####` pointers).
+`decisions/` (the `D####` pointers). The product spec is `SPEC.md`.
 
 ## Communication style
 
@@ -55,6 +55,7 @@ Rust 1.98, pinned in `rust-toolchain.toml`. Edition 2024. `#![deny(unsafe_code)]
   blows it, or any bundled-C crate, is a design change: issue first (D0004).
 - **CI:** a required check's workflow lists `merge_group:` (D0003).
 - Commit style: emoji prefix + short description (e.g. `🐧 segment codec`).
+- **Never put session links in PR bodies or commit messages.**
 
 ## Session completion
 
