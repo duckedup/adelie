@@ -6,8 +6,9 @@ every agent (Claude Code, Codex, Cursor); there is no CLAUDE.md. Why a rule exis
 
 ## Communication style
 
-Be direct, short, and straight to the point. Lead with the answer or the result. Say plainly
-when something failed or was skipped.
+The maintainer has ADHD. Write for that: terse, answer first, bullets over paragraphs, one
+idea per line, no preamble or recap. Ask at most one question at a time. Brevity never
+excuses omitting bad news: say plainly when something failed or was skipped.
 
 ## Issue tracking: beads (`bd`)
 
