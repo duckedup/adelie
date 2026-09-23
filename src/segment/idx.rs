@@ -81,6 +81,15 @@ pub struct IdxReader<B: AsRef<[u8]>> {
     indexes: Vec<IndexEntry>,
 }
 
+impl<B: AsRef<[u8]>> std::fmt::Debug for IdxReader<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdxReader")
+            .field("name", &self.name)
+            .field("indexes", &self.indexes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<B: AsRef<[u8]>> IdxReader<B> {
     /// `IdxMismatch` if the bound CRC in the header no longer matches `seg.footer_crc()`.
     pub fn open<S: AsRef<[u8]>>(

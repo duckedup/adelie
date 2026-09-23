@@ -27,6 +27,9 @@ pub(crate) const HEADER_LEN: usize = 8;
 pub(crate) const TRAILER_LEN: usize = 16;
 pub const DEFAULT_ROW_GROUP_ROWS: usize = 65_536;
 pub(crate) const MAX_DECODE_ROWS: usize = 1 << 22; // a claimed row count above this is Malformed
+/// Cap on one chunk's decoded variable-width data. DICT can expand a few bytes into this much,
+/// so decode checks it before allocating; the writer refuses a column above it.
+pub(crate) const MAX_DECODE_BYTES: usize = 1 << 30;
 pub(crate) const STATS_MAX_BYTES: usize = 128;
 pub(crate) const SAMPLE_ROWS: usize = 4096;
 pub(crate) const VALUE_SET_MAX: usize = 256;

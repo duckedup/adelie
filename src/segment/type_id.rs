@@ -48,10 +48,17 @@ pub(crate) fn encode_type(ty: &DataType, out: &mut Sink) {
     }
 }
 
-/// DECIMAL params go through `DataType::decimal`; a nested LIST is rejected through
-/// `DataType::list`. Both map their `TypeError` to `Malformed`, not a distinct variant.
+/// DECIMAL params go through `DataType::decimal`. A LIST element that is itself a LIST is
+/// rejected on its id, before recursing, so a hostile footer cannot nest deeper than one.
 pub(crate) fn decode_type(cur: &mut Cursor) -> Result<DataType, DecodeError> {
+    decode_type_at(cur, true)
+}
+
+fn decode_type_at(cur: &mut Cursor, list_ok: bool) -> Result<DataType, DecodeError> {
     let id = cur.uvarint()?;
+    if id == TYPE_LIST && !list_ok {
+        return Err(DecodeError::Malformed("nested list"));
+    }
     let params = cur.bytes()?;
     let mut p = Cursor::new(params);
     match id {
@@ -72,7 +79,7 @@ pub(crate) fn decode_type(cur: &mut Cursor) -> Result<DataType, DecodeError> {
         TYPE_UUID => Ok(DataType::Uuid),
         TYPE_IP => Ok(DataType::Ip),
         TYPE_LIST => {
-            let elem = decode_type(&mut p)?;
+            let elem = decode_type_at(&mut p, false)?;
             DataType::list(elem).map_err(|_| DecodeError::Malformed("nested list"))
         }
         other => Err(DecodeError::UnknownTypeId(other)),
@@ -82,6 +89,23 @@ pub(crate) fn decode_type(cur: &mut Cursor) -> Result<DataType, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LIST(LIST(999)): a recursing decoder reaches the bottom and says UnknownTypeId(999);
+    /// stopping at the inner LIST's id is what bounds recursion on a hostile footer.
+    #[test]
+    fn nested_list_is_rejected_before_recursing() {
+        let mut bytes = Vec::new();
+        for id in [999, TYPE_LIST, TYPE_LIST] {
+            let mut s = Sink::new();
+            encode_raw_type(id, &bytes, &mut s);
+            bytes = s.into_vec();
+        }
+        let mut c = Cursor::new(&bytes);
+        assert_eq!(
+            decode_type(&mut c),
+            Err(DecodeError::Malformed("nested list"))
+        );
+    }
 
     fn round_trip(ty: DataType) {
         let mut s = Sink::new();

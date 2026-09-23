@@ -57,16 +57,29 @@ pub(super) fn decode(
     }
     let codes = super::read_for(cur, rows)?;
 
+    // Sized before allocating: a 1-entry dict of N bytes and constant codes decode to
+    // rows × N bytes from a payload of a few bytes.
+    let mut total = 0usize;
+    for (i, &code) in codes.iter().enumerate() {
+        if is_valid(validity, i) {
+            let entry = entries
+                .get(code as usize)
+                .ok_or(DecodeError::Malformed("dict: code out of range"))?;
+            total = total.saturating_add(entry.len());
+        }
+    }
+    if total > crate::segment::MAX_DECODE_BYTES {
+        return Err(DecodeError::Malformed(
+            "dict: decoded data exceeds MAX_DECODE_BYTES",
+        ));
+    }
+
     let mut offsets = Vec::with_capacity(rows + 1);
-    let mut data = Vec::new();
+    let mut data = Vec::with_capacity(total);
     offsets.push(0u32);
     for i in 0..rows {
         if is_valid(validity, i) {
-            let code = codes[i];
-            if code >= ndict as u64 {
-                return Err(DecodeError::Malformed("dict: code out of range"));
-            }
-            data.extend_from_slice(entries[code as usize]);
+            data.extend_from_slice(entries[codes[i] as usize]);
         }
         let off =
             u32::try_from(data.len()).map_err(|_| DecodeError::Malformed("dict: too much data"))?;
@@ -181,5 +194,26 @@ mod tests {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
         assert!(decode(&mut c, crate::segment::MAX_DECODE_ROWS, None).is_err());
+    }
+
+    /// One 1 KiB entry and 2^20 zero codes: 1 GiB+ decoded from a ~1 KiB payload. It must be
+    /// refused on its size, before the data buffer is allocated.
+    #[test]
+    #[cfg_attr(miri, ignore)] // walks 2^20 codes; minutes under Miri
+    fn amplified_dict_is_refused_before_allocating() {
+        let rows = 1 << 20;
+        let mut s = Sink::new();
+        s.uvarint(1);
+        s.bytes(&[b'x'; 1025]);
+        super::super::write_for(&vec![0u64; rows], &mut s);
+        let buf = s.into_vec();
+        assert!(buf.len() < 2048);
+        let mut c = Cursor::new(&buf);
+        assert_eq!(
+            decode(&mut c, rows, None),
+            Err(DecodeError::Malformed(
+                "dict: decoded data exceeds MAX_DECODE_BYTES"
+            ))
+        );
     }
 }

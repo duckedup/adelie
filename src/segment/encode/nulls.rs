@@ -3,8 +3,8 @@
 
 use crate::exec::Bitmap;
 
-use super::error::DecodeError;
-use super::wire::{Cursor, Sink};
+use crate::segment::error::DecodeError;
+use crate::segment::wire::{Cursor, Sink};
 
 pub(super) fn encode_validity(v: Option<&Bitmap>, rows: usize, out: &mut Sink) {
     let Some(bm) = v else {

@@ -4,8 +4,8 @@
 use crate::exec::{Bitmap, Column, ColumnValues, OwnedValues};
 use crate::types::DataType;
 
-use super::error::DecodeError;
-use super::wire::{Cursor, Sink};
+use crate::segment::error::DecodeError;
+use crate::segment::wire::{Cursor, Sink};
 
 pub(super) fn encode(col: &Column, out: &mut Sink) {
     match col.values() {

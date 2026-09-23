@@ -13,7 +13,10 @@ use super::encode::{Encoding, encode_column};
 use super::error::Error;
 use super::footer::{Footer, RawChunk, RawRowGroup, bound_stats, encode_footer, write_trailer};
 use super::index::{self, IndexKind};
-use super::{DEFAULT_ROW_GROUP_ROWS, FORMAT_VERSION, HEADER_LEN, MAX_DECODE_ROWS, SEGMENT_MAGIC};
+use super::{
+    DEFAULT_ROW_GROUP_ROWS, FORMAT_VERSION, HEADER_LEN, MAX_DECODE_BYTES, MAX_DECODE_ROWS,
+    SEGMENT_MAGIC,
+};
 
 /// Options a `Writer` is built with. A pin skips encoding selection for that column;
 /// an index request builds one skip structure per row group for that column.
@@ -125,6 +128,17 @@ pub struct Writer<W: Write> {
     stats: Vec<StatsAcc>,
     pins: Vec<Option<Encoding>>,
     index_reqs: Vec<(usize, IndexKind)>,
+}
+
+/// No `W: Debug` bound: a writer over any sink can be printed.
+impl<W: Write> std::fmt::Debug for Writer<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("fields", &self.fields)
+            .field("rows", &self.rows())
+            .field("row_groups", &self.row_groups.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<W: Write> Writer<W> {
@@ -240,6 +254,14 @@ impl<W: Write> Writer<W> {
             let field = &self.fields[i];
             let col = Column::concat(&field.ty, &cols)
                 .map_err(|e| Error::Usage(format!("column {}: {e}", field.name)))?;
+            // A reader refuses to decode more than this per chunk, so never write one.
+            if col.byte_size() > MAX_DECODE_BYTES {
+                return Err(Error::Usage(format!(
+                    "column {}: row group holds {} bytes, over the {MAX_DECODE_BYTES}-byte chunk cap; lower row_group_rows",
+                    field.name,
+                    col.byte_size()
+                )));
+            }
             let (enc, bytes) = encode_column(&col, self.pins[i]);
             let crc = crc32c(&bytes);
             let offset = self.pos;

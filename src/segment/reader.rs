@@ -54,6 +54,17 @@ pub struct Reader<B: AsRef<[u8]>> {
     footer_crc: u32,
 }
 
+/// Names the segment and its shape, never the bytes: a segment can be gigabytes.
+impl<B: AsRef<[u8]>> std::fmt::Debug for Reader<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reader")
+            .field("name", &self.name)
+            .field("fields", &self.fields)
+            .field("row_groups", &self.row_groups.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<B: AsRef<[u8]>> Reader<B> {
     /// Validates the trailer, the header, the footer, every chunk's encoding/range, and
     /// every index entry's range/ordinals, in that order (SPEC §5). See the module tests.
@@ -488,8 +499,8 @@ mod tests {
 
     #[test]
     fn idx_unknown_index_kind_is_skipped() {
-        let (bytes, _batches) = sample_segment();
-        let seg = Reader::open("seg1", bytes).unwrap();
+        let batches = sample_batches(0, "host-");
+        let seg = Reader::open("seg1", write_segment(&batches)).unwrap();
         let idx_bytes = IdxWriter::build(&seg, &[(1, IndexKind::Ngram)]).unwrap();
 
         let range = read_trailer(&idx_bytes, IDX_MAGIC, 12).unwrap();
@@ -507,6 +518,20 @@ mod tests {
         assert_eq!(idx_reader.indexes().len(), 3);
         for entry in idx_reader.indexes() {
             assert_eq!(entry.kind, IndexKind::Ngram);
+            let rg = entry.row_group.expect("per-row-group entry");
+            let ngram = idx_reader.load_index(entry).unwrap();
+            let input = batches[rg].column(1);
+            for i in 0..input.len() {
+                let Value::String(v) = input.get(i) else {
+                    panic!("s is STRING")
+                };
+                assert!(ngram.might_contain_substring(&v), "rg {rg} lost {v}");
+            }
+            assert!(
+                !ngram.might_contain_substring("zzzq"),
+                "rg {rg} prunes nothing"
+            );
+            assert_eq!(seg.read_column(rg, 1).unwrap(), *input);
         }
     }
 
