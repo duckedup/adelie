@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "adelie",
+  "project_id": "418807fb-4a86-44e4-98ee-38dff62db9f6"
+}
