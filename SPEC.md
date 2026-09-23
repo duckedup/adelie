@@ -486,7 +486,7 @@ src/
 | Q9 | `elucidate()` significance: which test, and how is it corrected across many candidates? |
 | Q10 | Log patterns for multi-line logs (stack traces): one pattern per entry, or per first line? |
 | Q11 | Adaptive skip structures: what query-log evidence builds one, and what drops it (§16.2)? |
-| Q12 | Table engines (§18): where exactly is the engine trait boundary, and must it be settled before the segment format (§5) ships? |
+| Q12 | ~~Table engines (§18): where exactly is the engine trait boundary, and must it be settled before the segment format (§5) ships?~~ Answered (§18): the format ships first with three hooks; the boundary is fixed with the store (E4). |
 | Q13 | `latest`: is "newest" the commit sequence, a declared version column, or both? |
 | Q14 | `ledger`: its own crate and product, or an engine inside adelie? |
 
@@ -690,6 +690,28 @@ CREATE TABLE users (id UINT64, email STRING, seen TIMESTAMP)
 - An engine never changes the segment format for the others. What an engine needs on disk is
   added to §5 under the format rule (additive only).
 
+**What the segment format owes the engines.** This answers Q12: the segment format (§5) ships
+before the engine boundary is fixed, but with three hooks, because none can be added
+afterwards without a format version bump.
+
+1. **Extensible column types.** A footer column descriptor is a logical type id plus
+   parameters, not a closed enum. A reader that meets an unknown type fails with an error
+   naming it; it never guesses. This is how `rollup`'s aggregate states and `vector`'s
+   `FLOAT32` vectors get stored.
+2. **A generic index directory.** Each derived index (bloom, set, n-gram, full-text, and a
+   nearest-neighbour index) is an entry of kind, columns, byte range, and CRC, in the footer
+   or the `.idx` file. Readers skip kinds they do not know.
+3. **Segments stay engine-agnostic.** Per-segment commit sequence, the table's engine, and
+   `ledger`'s deletion vectors live in the manifest and its side files, never in a segment.
+   `latest` needs no per-row version: one flush is one commit, and duplicates of a key within
+   a flush are resolved at flush time.
+
+**The engine boundary is fixed with the store** (E4), where commits, compaction, and scans are
+built. An engine supplies: flush (buffered rows to segments), its merge policy (compaction
+inputs to outputs), scan resolution over unmerged segments, and optional index builders. The
+core keeps the manifest, commits and their conflict check, snapshots, retention, and the
+planner.
+
 **Consequences, stated plainly.**
 
 - `ledger` reverses two non-goals in §2 (a WAL; transactions and `UPDATE`) for one engine.
@@ -698,4 +720,4 @@ CREATE TABLE users (id UINT64, email STRING, seen TIMESTAMP)
 - Optimistic multi-table commits relax §6's one-writer-per-store rule only within the writer
   process. Several writer processes remain out of scope.
 
-Open questions Q12–Q14.
+Open questions Q13–Q14.
