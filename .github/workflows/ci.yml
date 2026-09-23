@@ -100,7 +100,6 @@ jobs:
         run: cargo test
 
   release:
-    name: release build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
