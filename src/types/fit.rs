@@ -108,11 +108,15 @@ fn int_to_decimal(n: i128, dt: DecimalType) -> Option<Value> {
     Decimal::new(unscaled, dt.scale()).ok().map(Value::Decimal)
 }
 
+const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0;
+
 fn float_to_int(f: f64) -> Option<Value> {
     if !f.is_finite() || f.fract() != 0.0 {
         return None;
     }
-    if !(i64::MIN as f64..=i64::MAX as f64).contains(&f) {
+    // `i64::MAX as f64` rounds up to 2^63, so the upper bound must be exclusive.
+    if !(-TWO_POW_63..TWO_POW_63).contains(&f) {
         return None;
     }
     Some(Value::Int64(f as i64))
@@ -122,7 +126,7 @@ fn float_to_uint(f: f64) -> Option<Value> {
     if !f.is_finite() || f.fract() != 0.0 {
         return None;
     }
-    if !(0.0..=u64::MAX as f64).contains(&f) {
+    if !(0.0..TWO_POW_64).contains(&f) {
         return None;
     }
     Some(Value::UInt64(f as u64))
@@ -202,6 +206,22 @@ mod tests {
         let n: i64 = 1 << 53;
         assert!(coerce(&Value::Int64(n), &DataType::Float64).is_some());
         assert_eq!(coerce(&Value::Int64(n + 1), &DataType::Float64), None);
+    }
+
+    #[test]
+    fn float_to_int_rejects_the_rounded_up_top_of_range() {
+        // i64::MAX as f64 == 2^63 and u64::MAX as f64 == 2^64: neither fits.
+        assert_eq!(coerce(&Value::Float64(TWO_POW_63), &DataType::Int64), None);
+        assert_eq!(
+            coerce(&Value::Float64(-TWO_POW_63), &DataType::Int64),
+            Some(Value::Int64(i64::MIN))
+        );
+        assert_eq!(coerce(&Value::Float64(TWO_POW_64), &DataType::UInt64), None);
+        let below = TWO_POW_64 - 2048.0; // the largest f64 under 2^64
+        assert_eq!(
+            coerce(&Value::Float64(below), &DataType::UInt64),
+            Some(Value::UInt64(18_446_744_073_709_549_568))
+        );
     }
 
     #[test]

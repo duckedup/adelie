@@ -125,7 +125,8 @@ between two non-null values of the same kind, else `None`. FLOAT64: `-0.0 == 0.0
 greater than `+inf` and equals itself *in the order*. DECIMAL compares exactly across scales
 (`1.5` == `1.50`). STRING, BYTES, UUID, and IP compare bytewise. BOOL: false < true. LIST
 compares lexicographically by element; a shorter prefix sorts first, and a NULL element sorts
-after any non-null element and equals another NULL element. SQL equality is separate from the
+after any non-null element and equals another NULL element; LIST columns report only a null
+count in stats, no min/max. SQL equality is separate from the
 order: NULL gives unknown, `NaN = NaN` is false, `-0.0 = 0.0` is true, and different kinds
 give unknown (the binder casts before it compares).
 

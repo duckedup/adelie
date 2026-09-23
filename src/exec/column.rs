@@ -412,14 +412,17 @@ impl ColumnBuilder {
             (BuilderData::Uuid(buf), Value::Uuid(bytes)) => buf.push(*bytes),
             (BuilderData::Ip(buf), Value::Ip(ip)) => buf.push(ip.octets()),
             (BuilderData::String { offsets, data }, Value::String(s)) => {
+                offsets.push(checked_offset(data.len() + s.len())?);
                 data.extend_from_slice(s.as_bytes());
-                push_offset(offsets, data.len())?
             }
             (BuilderData::Bytes { offsets, data }, Value::Bytes(b)) => {
+                offsets.push(checked_offset(data.len() + b.len())?);
                 data.extend_from_slice(b);
-                push_offset(offsets, data.len())?
             }
             (BuilderData::List { offsets, values }, Value::List(items)) => {
+                // Checked before any element is pushed, so an over-long list leaves the
+                // builder untouched. A child STRING overflowing mid-list does not.
+                checked_offset(values.len + items.len())?;
                 for item in items {
                     if item.is_null() {
                         values.push_null();
@@ -440,9 +443,12 @@ impl ColumnBuilder {
 }
 
 /// `total` as a `u32` offset, or `TooLarge` (never truncated) past `u32::MAX` bytes/elements.
+fn checked_offset(total: usize) -> Result<u32, ColumnError> {
+    u32::try_from(total).map_err(|_| ColumnError::TooLarge)
+}
+
 fn push_offset(offsets: &mut Vec<u32>, total: usize) -> Result<(), ColumnError> {
-    let off = u32::try_from(total).map_err(|_| ColumnError::TooLarge)?;
-    offsets.push(off);
+    offsets.push(checked_offset(total)?);
     Ok(())
 }
 

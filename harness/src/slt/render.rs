@@ -102,9 +102,10 @@ fn render_cell(value: &Value, ty: ColType) -> String {
             ColType::Int | ColType::Text => n.to_string(),
             ColType::Real => format!("{:.3}", *n as f64),
         },
-        Value::UInt(n) => match ty {
-            ColType::Int | ColType::Text => n.to_string(),
-            ColType::Real => format!("{:.3}", *n as f64),
+        Value::UInt(n) => match (ty, i64::try_from(*n)) {
+            (ColType::Real, Ok(small)) => format!("{:.3}", small as f64),
+            // Above i64::MAX this used to arrive as Text, whose digits pass through.
+            _ => n.to_string(),
         },
         Value::Float(f) => match ty {
             ColType::Int => format_float_as_int(*f),
@@ -243,6 +244,10 @@ mod tests {
             assert_eq!(
                 render_cell(&Value::UInt(7), ty),
                 render_cell(&Value::Int(7), ty)
+            );
+            assert_eq!(
+                render_cell(&Value::UInt(u64::MAX), ty),
+                render_cell(&Value::Text(u64::MAX.to_string()), ty)
             );
             assert_eq!(
                 render_cell(

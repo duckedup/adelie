@@ -126,8 +126,10 @@ mod tests {
 
     #[test]
     fn decimal_type_accepts_boundary_precisions() {
-        assert!(DecimalType::new(38, 0).is_ok());
-        assert!(DecimalType::new(1, 1).is_ok());
+        let wide = DecimalType::new(38, 0).unwrap();
+        assert_eq!((wide.precision(), wide.scale()), (38, 0));
+        let narrow = DecimalType::new(1, 1).unwrap();
+        assert_eq!((narrow.precision(), narrow.scale()), (1, 1));
     }
 
     #[test]

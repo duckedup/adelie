@@ -87,7 +87,7 @@ fn format_list(items: &[Value]) -> String {
 
 /// Howard Hinnant's civil-from-days: a day count since 1970-01-01 to (year, month, day).
 /// http://howardhinnant.github.io/date_algorithms.html#civil_from_days
-/// Duplicated from `bench/src/duck.rs` — adelie cannot depend on bench or harness.
+/// Duplicated in `harness/src/civil.rs` — adelie cannot depend on the harness.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
