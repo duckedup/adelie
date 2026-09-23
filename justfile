@@ -42,3 +42,11 @@ bd-setup:
 bd-sync:
     bd dolt pull
     bd dolt push
+
+# Fetch one section of a repo doc: just spec toc | just spec 8 | just spec find wal
+spec *ARGS:
+    @.claude/skills/adelie/bin/spec {{ARGS}}
+
+# Deterministic repo-law check over the branch (the /adelie skill runs this before shipping)
+laws *ARGS:
+    @.claude/skills/adelie/bin/adelie-check laws {{ARGS}}
