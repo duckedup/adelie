@@ -380,6 +380,7 @@ fn build_round_trip_fixture(
 
 // Criterion 1: round trip across several row groups.
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn round_trip_across_several_row_groups() {
     let sizes = push_sizes_500();
     let fx = build_round_trip_fixture(0xA11CE, 100, &sizes);
@@ -429,6 +430,7 @@ fn round_trip_across_several_row_groups() {
 
 // Criterion 2: per-row-group and whole-segment stats.
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn stats_match_column_stats_per_row_group_and_for_the_whole_segment() {
     let sizes = push_sizes_500();
     let fx = build_round_trip_fixture(0xA11CE, 100, &sizes);
@@ -508,6 +510,7 @@ fn flip_one_value(flds: &[Field], batches: &[Batch], field_name: &str) -> Vec<Ba
 
 // Criterion 3: determinism, plus a control that proves the comparison sees content.
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn determinism_same_seed_gives_identical_bytes_and_a_control_flip_differs() {
     let flds = fields();
     let mut gen_rng = SplitMix64::new(0xD3D3);
@@ -561,6 +564,7 @@ fn find_index(entries: &[IndexEntry], rg: usize, kind: IndexKind, col: usize) ->
 
 // Criterion 4: requested indexes prune correctly in every row group.
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn indexes_prune_known_values_and_reject_absent_ones() {
     let flds = fields();
     let opts = WriterOptions {
@@ -633,6 +637,7 @@ fn footer_len(bytes: &[u8]) -> usize {
 // Criterion 5: a single-byte body flip either leaves every read Ok, or corrupts exactly one
 // column's chunk (never silently returns different data).
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn single_byte_flips_in_the_body_either_stay_ok_or_name_the_corrupt_chunk() {
     let flds = fields();
     let opts = WriterOptions {
@@ -766,6 +771,7 @@ fn check_fuzzed_bytes(bytes: &[u8], reference: &Reader<Vec<u8>>, flds: &[Field])
 
 // Criterion 6: fuzzed bytes never panic and never decode to the wrong data.
 #[test]
+#[cfg_attr(miri, ignore)] // 500-row, 14-column fixture: minutes under Miri; the lib tests cover this code
 fn fuzzed_bytes_never_panic_and_never_decode_to_wrong_data() {
     let iters: usize = std::env::var("ADELIE_FUZZ_ITERS")
         .ok()
