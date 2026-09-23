@@ -173,7 +173,7 @@ mod tests {
         for len in [0usize, 1, 2, 100] {
             let mut bm = Bitmap::new_null(len);
             for i in 0..len {
-                bm.set(i, i % 3 == 0);
+                bm.set(i, i.is_multiple_of(3));
             }
             let mut s = Sink::new();
             encode_bool(&bm, &mut s);

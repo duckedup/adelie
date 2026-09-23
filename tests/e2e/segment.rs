@@ -108,7 +108,7 @@ fn gen_float(rng: &mut SplitMix64) -> f64 {
 /// Stays well under `DECIMAL(18,4)`'s bound (`|unscaled| < 10^18`) with room to spare.
 fn gen_decimal(rng: &mut SplitMix64) -> Value {
     let magnitude = rng.range(0, 999_999_999_999_999_999) as i128;
-    let unscaled = if rng.next_u64() % 2 == 0 {
+    let unscaled = if rng.next_u64().is_multiple_of(2) {
         magnitude
     } else {
         -magnitude
@@ -160,7 +160,7 @@ fn batch(rng: &mut SplitMix64, rows: usize) -> Batch {
         b.push(if null_roll(rng) {
             Value::Null
         } else {
-            Value::Bool(rng.next_u64() % 2 == 0)
+            Value::Bool(rng.next_u64().is_multiple_of(2))
         });
         i.push(if null_roll(rng) {
             Value::Null
@@ -218,7 +218,7 @@ fn batch(rng: &mut SplitMix64, rows: usize) -> Batch {
         } else {
             Value::List(gen_tags(rng))
         });
-        if rng.next_u64() % 2 == 0 {
+        if rng.next_u64().is_multiple_of(2) {
             x.push(Value::Int64(rng.next_u64() as i64));
             xs.push(Value::Null);
         } else {
@@ -552,12 +552,7 @@ fn determinism_same_seed_gives_identical_bytes_and_a_control_flip_differs() {
     );
 }
 
-fn find_index<'a>(
-    entries: &'a [IndexEntry],
-    rg: usize,
-    kind: IndexKind,
-    col: usize,
-) -> &'a IndexEntry {
+fn find_index(entries: &[IndexEntry], rg: usize, kind: IndexKind, col: usize) -> &IndexEntry {
     entries
         .iter()
         .find(|e| e.row_group == Some(rg) && e.kind == kind && e.columns == vec![col])

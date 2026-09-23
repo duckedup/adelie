@@ -86,6 +86,12 @@ impl Sink {
         self.bytes(&inner.buf);
     }
 
+    /// Test-only: the encoded-size bounds in the codec tests read it before `into_vec`.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.buf.len()
+    }
+
     pub(crate) fn into_vec(self) -> Vec<u8> {
         self.buf
     }

@@ -135,7 +135,7 @@ mod tests {
         let mut rng = SplitMix64::new(4);
         let values: Vec<Value> = (0..N)
             .map(|i| {
-                if i % 50 == 0 {
+                if i.is_multiple_of(50) {
                     Value::Float64(f64::NAN)
                 } else {
                     Value::Float64((rng.next_u64() % 200) as f64)
