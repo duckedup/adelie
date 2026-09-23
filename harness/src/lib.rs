@@ -2,6 +2,7 @@
 //! Never published; a dev-dependency of the root crate and a path dependency of `bench/`.
 #![deny(unsafe_code)]
 
+pub mod civil;
 pub mod crash;
 pub mod engine;
 pub mod fake;

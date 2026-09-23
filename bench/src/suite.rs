@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use adelie_harness::engine::{Engine, EngineError, Outcome, Value};
+use adelie_harness::slt::render_text;
 
 /// One query file: its filename stem, its `-- <description>` first line, and its SQL body.
 pub struct Query {
@@ -168,20 +169,7 @@ fn cross_check(outcomes: &[(String, Result<Outcome, EngineError>)]) -> Option<St
 }
 
 fn render_row(row: &[Value]) -> String {
-    row.iter().map(render_value).collect::<Vec<_>>().join(" ")
-}
-
-fn render_value(v: &Value) -> String {
-    match v {
-        Value::Null => "NULL".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(n) => n.to_string(),
-        Value::Float(f) if f.is_nan() => "NaN".to_string(),
-        Value::Float(f) if f.is_infinite() => if *f > 0.0 { "inf" } else { "-inf" }.to_string(),
-        Value::Float(f) => format!("{f}"),
-        Value::Text(s) if s.is_empty() => "(empty)".to_string(),
-        Value::Text(s) => s.clone(),
-    }
+    row.iter().map(render_text).collect::<Vec<_>>().join(" ")
 }
 
 /// A table with query, description, one median-ms column per engine, and `loss` (slowest

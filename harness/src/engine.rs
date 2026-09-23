@@ -5,11 +5,31 @@ use std::fmt;
 /// A single cell value, engine-agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// SQL NULL.
     Null,
     Bool(bool),
     Int(i64),
+    /// An integer too wide for `i64` unsigned, e.g. DuckDB's `UBIGINT`.
+    UInt(u64),
     Float(f64),
+    /// An exact fixed-point value; `value` × 10^-`scale`.
+    Decimal {
+        value: i128,
+        scale: u8,
+    },
     Text(String),
+    /// Opaque bytes, e.g. a `BLOB` column.
+    Bytes(Vec<u8>),
+    /// Nanoseconds since the epoch, UTC.
+    Timestamp(i64),
+    /// Days since the epoch.
+    Date(i32),
+    /// A 16-byte UUID.
+    Uuid([u8; 16]),
+    /// An IPv4 or IPv6 address.
+    Ip(std::net::IpAddr),
+    /// A nested list of values, possibly of mixed kinds.
+    List(Vec<Value>),
 }
 
 /// The result of running one SQL statement.

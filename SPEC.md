@@ -106,24 +106,60 @@ implementation detail.
 |---|---|
 | `BOOL` | |
 | `INT64`, `UINT64` | narrower integers are an encoding detail, not a type |
-| `FLOAT64` | IEEE; `NaN` sorts last and never equals itself |
+| `FLOAT64` | IEEE; `NaN` sorts last, and SQL `=` never matches it |
+| `DECIMAL(p, s)` | exact; precision 1–38, scale 0–p; a scaled 128-bit integer |
 | `STRING` | UTF-8 |
 | `BYTES` | opaque; trace and span ids |
 | `TIMESTAMP` | UTC nanoseconds since the epoch; no time zone is stored |
 | `DATE` | days since the epoch |
-| `LIST<T>` | homogeneous list of a scalar type |
-| `DECIMAL(p, s)` | exact; money and counters that must not drift |
-| `UUID` | 16 bytes, rendered canonically |
-| `IP` | one type for IPv4 and IPv6, with CIDR containment |
+| `UUID` | 16 bytes; sorts bytewise, which matches canonical text order |
+| `IP` | IPv4 or IPv6 in 16 bytes (IPv4 stored IPv4-mapped, shown dotted-quad), with CIDR containment |
+| `LIST<T>` | homogeneous list of a non-list type |
 
 There is no `ENUM` type (low-cardinality strings are dictionary-encoded automatically) and no
-`MAP` or `JSON` type (dynamic columns are the map, §16.3). `STRUCT` is deferred.
+`MAP` or `JSON` type (dynamic columns are the map, §16.3). `STRUCT` is deferred. Representation
+choices for DECIMAL, UUID, and IP: D0007.
+
+**Ordering and equality.** The total order (sort, min/max, footer stats) is defined only
+between two non-null values of the same kind, else `None`. FLOAT64: `-0.0 == 0.0`; `NaN` is
+greater than `+inf` and equals itself *in the order*. DECIMAL compares exactly across scales
+(`1.5` == `1.50`). STRING, BYTES, UUID, and IP compare bytewise. BOOL: false < true. LIST
+compares lexicographically by element; a shorter prefix sorts first, and a NULL element sorts
+after any non-null element and equals another NULL element; LIST columns report only a null
+count in stats, no min/max. SQL equality is separate from the
+order: NULL gives unknown, `NaN = NaN` is false, `-0.0 = 0.0` is true, and different kinds
+give unknown (the binder casts before it compares).
+
+**Fitting a column.** Writing a value into a typed column coerces losslessly and never parses
+a string: `coerce(value, column_type) -> Option<Value>`.
+
+- Null fits every type. The same kind fits as itself; DECIMAL rescales to the column's scale
+  only when that is exact and within its precision. For LIST, every element must coerce.
+- `INT64` → `UINT64` when non-negative. `UINT64` → `INT64` when ≤ `i64::MAX`.
+- `INT64`/`UINT64` → `FLOAT64` when `|n| ≤ 2^53`; → `DECIMAL(p, s)` when `n·10^s` fits in p
+  digits.
+- `FLOAT64` → `INT64`/`UINT64` when finite, integral, and in range. `DECIMAL` →
+  `INT64`/`UINT64` when integral and in range. `DATE` → `TIMESTAMP` (midnight UTC) when in
+  range.
+- Anything else is `None`, and the value is stored under `<name>::string` as its canonical
+  text.
+
+**Canonical text.** `Value::to_text` returns `None` for `NULL`. `BOOL` is `true`/`false`;
+integers are decimal; `FLOAT64` is Rust `{}`, `NaN`, `inf`, or `-inf`. `DECIMAL` is exact with
+exactly `scale` fractional digits (`1.50`). `STRING` is as-is; `BYTES` is `\x` followed by
+lowercase hex. `TIMESTAMP` is `YYYY-MM-DDTHH:MM:SS[.fff|.ffffff|.fffffffff]Z`, using the
+shortest exact fraction and nothing when there is none. `DATE` is `YYYY-MM-DD`; `UUID` is
+lowercase 8-4-4-4-12; `IP` is `std::net::IpAddr` display, with IPv4-mapped shown as dotted
+quad. `LIST` is `[e1, e2]`, where a `NULL` element shows as `NULL` and `STRING` elements are
+single-quoted with `''` escaping.
 
 **Dynamic columns and type conflicts.** Each segment stores only the columns its rows carry,
 each with one type. Across segments a column keeps the type it was first created with; a
-later value that does not fit is stored in a companion `<name>::string` column, and reading
-`<name>` coalesces the two. A type conflict never rejects a row and never silently rewrites
-existing data. (Open question Q2 refines this.)
+later value that does not fit is stored in a companion `<name>::string` column. Reading
+`<name>` when a companion exists yields STRING: the primary's canonical text if the primary
+is non-null, else the companion; the primary wins if both are set. With no companion,
+`<name>` reads as its own type. A type conflict never rejects a row and never silently
+rewrites existing data. (Open question Q2 refines this.)
 
 ---
 
