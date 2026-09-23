@@ -55,6 +55,66 @@ export function emptyScope(changed, kind = 'range') {
     'A clean result here says nothing about your work. Commit first, or widen the target with --base/--pr/--path.')]
 }
 
+// ── Version bump (D0005) ────────────────────────────────────────────────────
+// release.yml publishes only when Cargo.toml's version has no `v<version>` tag, so a
+// behavioural PR that does not bump ships nothing. 0.0.0 is a placeholder that never releases.
+
+export const BEHAVIOURAL = [/^src\//, /^Cargo\.toml$/]
+
+export const versionOf = t => (String(t || '').match(/^version\s*=\s*"([^"]+)"/m) || [])[1] || null
+
+const cmpVersion = (a, b) => {
+  const pa = String(a).split('.').map(Number)
+  const pb = String(b).split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+
+export function versionBump(baseCargo, headCargo, changed) {
+  const touched = (changed || []).filter(f => BEHAVIOURAL.some(re => re.test(f)))
+  if (!touched.length) return []
+  const base = versionOf(baseCargo)
+  const head = versionOf(headCargo)
+  if (base && head && base !== head) return []
+  return [finding('version-bump', 'error', 'Cargo.toml', 1,
+    `version stayed at ${head || '?'} despite behavioural changes`,
+    `D0005: bump the version in every PR with a user-visible or behavioural change; release.yml publishes only an untagged version, so an un-bumped PR ships NOTHING. Changed: ${touched.slice(0, 6).join(', ')}${touched.length > 6 ? '…' : ''}`)]
+}
+
+// versionBump compares merge base to head, so it cannot see a branch claiming a version
+// origin/main already has or has passed (found in nidus, #173 / nidus-7nk). Gated on the
+// version having *changed*, so a dependency-only edit at the same version stays clean.
+export function versionBackwards(baseCargo, headCargo, originCargo, changed) {
+  if (!(changed || []).includes('Cargo.toml')) return []
+  const base = versionOf(baseCargo)
+  const head = versionOf(headCargo)
+  const origin = versionOf(originCargo)
+  if (!head || !origin || base === head) return []
+  if (cmpVersion(head, origin) > 0) return []
+  const how = cmpVersion(head, origin) === 0 ? `is already origin/main's` : `is behind origin/main's`
+  return [finding('version-backwards', 'error', 'Cargo.toml', 1,
+    `version ${head} ${how} ${origin}`,
+    'D0005: release.yml only publishes a version it has not tagged, so merging this ships NOTHING, silently. Pick a version strictly above origin/main.')]
+}
+
+// The gap versionBackwards cannot see (found in nidus, nidus-zin): a version above
+// origin/main whose tag already exists. No readable tag list means no finding at all, so a
+// fresh or offline clone never sees a false one; gated on Cargo.toml itself changing.
+export function versionAlreadyTagged(baseCargo, headCargo, tags, changed) {
+  if (!(changed || []).includes('Cargo.toml')) return []
+  const base = versionOf(baseCargo)
+  const head = versionOf(headCargo)
+  if (!head || base === head) return []
+  if (!tags || typeof tags.has !== 'function' || tags.size === 0) return []
+  if (!tags.has(`v${head}`)) return []
+  return [finding('version-already-tagged', 'error', 'Cargo.toml', 1,
+    `version ${head} is already released as v${head}`,
+    'D0005: release.yml publishes only when the tag is new, so merging this ships NOTHING even though the version is ahead of main. Bump past the tag.')]
+}
+
 // ── New dependencies vs. the build budget (D0004) ──────────────────────────
 // Names that mean a bundled-C/C++ or native-linking tree, or a tree that alone would eat the
 // 60s clean-build budget. `[-_]sys$` catches the name, not the tree, so the pure-Rust `-sys`
@@ -229,7 +289,8 @@ export function decisionPointers(texts, decisionFiles) {
 }
 
 export const LAW_IDS = [
-  'unsafe-code', 'unsafe-attr', 'stale-base', 'empty-scope', 'forbidden-dep', 'new-dep',
+  'unsafe-code', 'unsafe-attr', 'stale-base', 'empty-scope',
+  'version-bump', 'version-backwards', 'version-already-tagged', 'forbidden-dep', 'new-dep',
   'test-placement', 'miri-ignore', 'session-link', 'stale-ticket',
   'skill-lane-missing', 'skill-lane-orphan', 'context-budget', 'dangling-decision',
 ]

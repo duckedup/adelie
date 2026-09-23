@@ -4,7 +4,7 @@
 import * as laws from './laws.mjs'
 import * as fleet from './fleet.mjs'
 import * as pre from './preflight.mjs'
-import { lanes, formatLanes, ciGuard, CI_JOBS, JOB_IDS } from './lanes.mjs'
+import { lanes, formatLanes, ciGuard, CI_JOBS, RUST_JOBS } from './lanes.mjs'
 import * as spec from './specdoc.mjs'
 import * as guards from './guards.mjs'
 import { canonicalId, branchNamesIssue } from './git.mjs'
@@ -191,34 +191,33 @@ test('ids: a branch names a bead by full id or by a leading bare hash', () => {
 
 test('lanes: a Rust source is exercised by every CI job', () => {
   const r = lanes(['src/lib.rs'])
-  eq(r.jobs, JOB_IDS, 'all jobs')
-  eq(r.rows[0].jobs, ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri'], 'row')
+  eq(r.jobs, [...RUST_JOBS, 'checker-laws'], 'every cargo job, plus the laws')
 })
 
 test('lanes: manifests, toolchain, tests/ and workflows hit every job too', () => {
   for (const f of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tests/e2e/main.rs', '.github/workflows/ci.yml']) {
-    eq(lanes([f]).jobs, JOB_IDS, f)
+    eq(RUST_JOBS.every(j => lanes([f]).jobs.includes(j)), true, f)
   }
 })
 
-test('lanes: docs, decisions, .beads and .claude are exercised by no job, honestly said', () => {
+test('lanes: docs, decisions, .beads and .claude are exercised by no build/test job, honestly said', () => {
   const files = ['README.md', 'AGENTS.md', 'decisions/0004-the-build-budget-is-enforced.md', '.beads/config.yaml', '.claude/skills/adelie/SKILL.md', 'LICENSE']
   const r = lanes(files)
-  eq(r.jobs, [], 'no jobs')
+  eq(r.jobs, ['checker-laws'], 'only the laws diff them')
   eq(r.unexercised, files, 'all unexercised')
   eq(r.unmatched, [], 'none unmapped')
-  eq(/no CI job exercises this/.test(formatLanes(r)), true, 'wording')
+  eq(/no build or test job exercises this; checker-laws only/.test(formatLanes(r)), true, 'wording')
 })
 
-test('lanes: the skill lib and hooks name the local fixture suite CI never runs', () => {
+test('lanes: the skill lib and hooks map to checker-selftest and name it locally', () => {
   const r = lanes(['.claude/skills/adelie/lib/laws.mjs', '.claude/hooks/law-check.mjs'])
-  eq(r.jobs, [], 'no CI job')
+  eq(r.jobs, ['checker-selftest', 'checker-laws'], 'CI jobs')
   eq(r.local, ['.claude/skills/adelie/bin/adelie-check selftest'], 'local check')
 })
 
 test('lanes: the justfile is local tooling, not a CI input', () => {
   const r = lanes(['justfile', 'scripts/bd-setup.sh'])
-  eq(r.jobs, [], 'no CI job')
+  eq(r.jobs, ['checker-laws'], 'no build job')
   eq(r.local, ['just ci'], 'local check')
 })
 
@@ -249,16 +248,22 @@ test('lanes: an empty scope does not read like a docs-only change', () => {
 // ── ci-guard ───────────────────────────────────────────────────────────────
 
 test('ci-guard: the job ids are exactly ci.yml\'s', () => {
-  eq(Object.keys(CI_JOBS), ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri'], 'ids')
+  eq(Object.keys(CI_JOBS), ['fmt', 'build-budget', 'clippy', 'test', 'release', 'miri', 'checker-selftest', 'checker-laws'], 'ids')
 })
 
-test('ci-guard: a docs/skill-only change skips every job', () => {
-  for (const job of JOB_IDS) eq(ciGuard(job, ['README.md', '.claude/skills/adelie/SKILL.md', 'decisions/0001-x.md']).run, false, job)
+test('ci-guard: a docs-only change skips every cargo job and the selftest, not the laws', () => {
+  for (const job of [...RUST_JOBS, 'checker-selftest']) eq(ciGuard(job, ['README.md', '.claude/skills/adelie/SKILL.md', 'decisions/0001-x.md']).run, false, job)
+  eq(ciGuard('checker-laws', ['README.md']).run, true, 'laws')
+})
+
+test('ci-guard: a detector change runs checker-selftest, not the cargo jobs', () => {
+  eq(ciGuard('checker-selftest', ['.claude/skills/adelie/lib/laws.mjs']).run, true, 'selftest')
+  eq(ciGuard('miri', ['.claude/skills/adelie/lib/laws.mjs']).run, false, 'miri')
 })
 
 test('ci-guard: any Rust input runs every job', () => {
   for (const f of ['src/lib.rs', 'Cargo.toml', 'Cargo.lock', 'tests/e2e/main.rs', 'rust-toolchain.toml', '.github/workflows/ci.yml']) {
-    for (const job of JOB_IDS) eq(ciGuard(job, ['README.md', f]).run, true, `${job} for ${f}`)
+    for (const job of RUST_JOBS) eq(ciGuard(job, ['README.md', f]).run, true, `${job} for ${f}`)
   }
 })
 
@@ -603,15 +608,130 @@ test('preflight: every bead in a bundle is checked, not just the first', () => {
   eq(ids(pre.preflight({ ...clean, issues: [{ issue: ok }, { issue: shipped }] })), ['preflight-ticket-closed'], 'the second blocks')
 })
 
-test('preflight: no version line at 0.0.0 with no tags — no release process yet', () => {
-  eq(pre.versionLine({ mainVersion: '0.0.0', nextVersion: null, tagCount: 0 }), null, 'silent')
-  eq(/version/.test(pre.formatPreflight([], { branch: 'b', fetched: true, mainVersion: '0.0.0', tagCount: 0 })), false, 'not printed')
+test('preflight: at the 0.0.0 placeholder with no tags, say bump from it', () => {
+  const line = pre.versionLine({ mainVersion: '0.0.0', nextVersion: '0.1.0', tagCount: 0 })
+  eq(/bump from the 0\.0\.0 placeholder, e\.g\. 0\.1\.0/.test(line), true, line)
+  eq(/placeholder/.test(pre.formatPreflight([], { branch: 'b', fetched: true, mainVersion: '0.0.0', nextVersion: '0.1.0' })), true, 'printed')
 })
 
-test('preflight: a version line once tags exist, with the next free version', () => {
+test('preflight: once main is above 0.0.0 or a tag exists, print the next free version', () => {
+  eq(/next free version to claim: 0\.3\.0/.test(pre.versionLine({ mainVersion: '0.2.0', nextVersion: '0.3.0', tagCount: 0 })), true, 'main above 0.0.0')
+  eq(/next free version to claim: 0\.2\.0/.test(pre.versionLine({ mainVersion: '0.0.0', nextVersion: '0.2.0', tagCount: 1 })), true, 'a tag exists')
+  eq(/next free version to claim: 0\.2\.0/.test(pre.versionLine({ mainVersion: '0.0.0', nextVersion: '0.2.0', tagCount: 0 })), true, 'an in-flight branch already took 0.1.0')
+  eq(pre.versionLine({}), null, 'no Cargo.toml on main')
+})
+
+test('preflight: next free version skips main, in-flight branches and released tags', () => {
+  eq(pre.nextFreeVersion('0.0.0', [], new Set()), '0.1.0', 'from the placeholder')
   eq(pre.nextFreeVersion('0.2.0', [{ ref: 'origin/a', version: '0.3.0' }], new Set(['v0.2.0'])), '0.4.0', 'past the claim')
-  eq(pre.nextFreeVersion('0.9.0', [], new Set(['v0.10.0'])), '0.11.0', 'numeric, past a tag')
-  eq(/next free version to claim: 0\.4\.0/.test(pre.versionLine({ mainVersion: '0.2.0', nextVersion: '0.4.0', tagCount: 1 })), true, 'printed')
+  eq(pre.nextFreeVersion('0.2.0', [], new Set(['v0.2.0', 'v0.3.0'])), '0.4.0', 'past a tag with no branch')
+  eq(pre.nextFreeVersion('0.9.0', [{ ref: 'origin/a', version: '0.10.0' }], new Set()), '0.11.0', 'numeric, not lexical')
+})
+
+// ── version laws (D0005) ───────────────────────────────────────────────────
+
+const CARGO = v => `[package]\nname = "adelie"\nversion = "${v}"\n`
+
+test('version bump: a src/ change at an unchanged version fires', () => {
+  const found = laws.versionBump(CARGO('0.0.0'), CARGO('0.0.0'), ['src/lib.rs'])
+  eq(ids(found), ['version-bump'], 'findings')
+  eq(found[0].detail.includes('D0005'), true, 'cites D0005')
+})
+
+test('version bump: a Cargo.toml change at an unchanged version fires', () => {
+  eq(ids(laws.versionBump(CARGO('0.1.0'), CARGO('0.1.0'), ['Cargo.toml'])), ['version-bump'], 'findings')
+})
+
+test('version bump: satisfied by an actual bump', () => {
+  eq(ids(laws.versionBump(CARGO('0.0.0'), CARGO('0.1.0'), ['src/lib.rs', 'Cargo.toml'])), [], 'findings')
+})
+
+test('version bump: skill-only, docs-only and Cargo.lock-only changes owe no bump', () => {
+  eq(ids(laws.versionBump(CARGO('0.0.0'), CARGO('0.0.0'), ['.claude/skills/adelie/SKILL.md', '.claude/skills/adelie/lib/laws.mjs'])), [], 'skill')
+  eq(ids(laws.versionBump(CARGO('0.0.0'), CARGO('0.0.0'), ['README.md', 'decisions/0005-x.md', '.github/workflows/ci.yml'])), [], 'docs/CI')
+  eq(ids(laws.versionBump(CARGO('0.0.0'), CARGO('0.0.0'), ['Cargo.lock'])), [], 'lockfile alone')
+})
+
+// Three distinct versions on purpose: a two-version fixture passes under both old and new logic.
+test('version backwards: a version below origin/main is caught', () => {
+  const out = laws.versionBackwards(CARGO('0.1.0'), CARGO('0.2.0'), CARGO('0.3.0'), ['Cargo.toml'])
+  eq(ids(out), ['version-backwards'], 'findings')
+  eq(out[0].detail.includes('D0005'), true, 'cites D0005')
+})
+
+test('version backwards: equal to origin/main is the collision, not a no-op', () => {
+  eq(ids(laws.versionBackwards(CARGO('0.1.0'), CARGO('0.2.0'), CARGO('0.2.0'), ['Cargo.toml'])), ['version-backwards'], 'findings')
+})
+
+test('version backwards: the case versionBump passes clean', () => {
+  eq(laws.versionBump(CARGO('0.3.0'), CARGO('0.2.0'), ['src/lib.rs']).length, 0, 'versionBump sees a bump')
+  eq(laws.versionBackwards(CARGO('0.3.0'), CARGO('0.2.0'), CARGO('0.3.0'), ['Cargo.toml']).length, 1, 'only this law catches it')
+})
+
+test('version backwards: strictly above main, a same-version dep edit, or untouched Cargo.toml is fine', () => {
+  eq(ids(laws.versionBackwards(CARGO('0.2.0'), CARGO('0.3.0'), CARGO('0.2.0'), ['Cargo.toml'])), [], 'ahead')
+  eq(ids(laws.versionBackwards(CARGO('0.9.0'), CARGO('0.10.0'), CARGO('0.9.0'), ['Cargo.toml'])), [], 'numeric, not lexical')
+  eq(ids(laws.versionBackwards(CARGO('0.2.0'), CARGO('0.2.0'), CARGO('0.2.0'), ['Cargo.toml'])), [], 'version never claimed')
+  eq(ids(laws.versionBackwards(CARGO('0.1.0'), CARGO('0.2.0'), CARGO('0.3.0'), ['.claude/skills/adelie/SKILL.md'])), [], 'not touched')
+})
+
+test('version already tagged: ahead of main but tagged is caught', () => {
+  const base = CARGO('0.4.0'), head = CARGO('0.5.0'), tags = new Set(['v0.4.0', 'v0.5.0'])
+  eq(laws.versionBackwards(base, head, CARGO('0.4.0'), ['Cargo.toml']).length, 0, 'versionBackwards passes it')
+  const out = laws.versionAlreadyTagged(base, head, tags, ['Cargo.toml', 'src/lib.rs'])
+  eq(ids(out), ['version-already-tagged'], 'findings')
+  eq(/v0\.5\.0/.test(out[0].summary), true, 'names the tag')
+  eq(out[0].detail.includes('D0005'), true, 'cites D0005')
+})
+
+test('version already tagged: no readable tag list means no finding', () => {
+  const base = CARGO('0.4.0'), head = CARGO('0.5.0'), ch = ['Cargo.toml']
+  eq(laws.versionAlreadyTagged(base, head, new Set(), ch).length, 0, 'empty set (fresh clone)')
+  eq(laws.versionAlreadyTagged(base, head, null, ch).length, 0, 'null')
+  eq(laws.versionAlreadyTagged(base, head, {}, ch).length, 0, 'not a Set')
+})
+
+test('version already tagged: an untagged bump, an unchanged version, or no Cargo.toml change is clean', () => {
+  const tags = new Set(['v0.5.0'])
+  eq(laws.versionAlreadyTagged(CARGO('0.5.0'), CARGO('0.6.0'), tags, ['Cargo.toml']).length, 0, 'tag is free')
+  eq(laws.versionAlreadyTagged(CARGO('0.5.0'), CARGO('0.5.0'), tags, ['Cargo.toml']).length, 0, 'unchanged')
+  eq(laws.versionAlreadyTagged(CARGO('0.4.0'), CARGO('0.5.0'), tags, ['.claude/skills/adelie/SKILL.md']).length, 0, 'skill-only, stale base')
+  eq(laws.versionAlreadyTagged(CARGO('0.4.0'), CARGO('0.5.0'), tags, ['src/lib.rs']).length, 0, 'src without Cargo.toml')
+})
+
+// ── fleet version claims (D0005) ───────────────────────────────────────────
+
+const BEHAV = laws.BEHAVIOURAL
+
+test('fleet: two branches claiming one version is an error', () => {
+  const b = [{ ref: 'origin/a', version: '0.2.0' }, { ref: 'origin/b', version: '0.2.0' }]
+  eq(ids(fleet.versionFindings(b, '0.1.0', new Set(['v0.1.0']))), ['fleet-version-collision'], 'findings')
+})
+
+test('fleet: distinct versions ahead of main are clean', () => {
+  const b = [{ ref: 'origin/a', version: '0.2.0' }, { ref: 'origin/b', version: '0.3.0' }]
+  eq(ids(fleet.versionFindings(b, '0.1.0', new Set(['v0.1.0']))), [], 'findings')
+})
+
+test('fleet: a skill-only branch owes no bump and collides with nothing', () => {
+  const b = [{ ref: 'origin/s1', version: '0.1.0', changed: ['.claude/skills/adelie/SKILL.md'] },
+             { ref: 'origin/s2', version: '0.1.0', changed: ['README.md'] }]
+  eq(ids(fleet.versionFindings(b, '0.1.0', new Set(['v0.1.0']), new Set(['s1', 's2']), BEHAV)), [], 'exempt')
+})
+
+test('fleet: a src-touching branch at a tagged version fires', () => {
+  const b = [{ ref: 'origin/c', version: '0.1.0', changed: ['src/lib.rs'] }]
+  eq(ids(fleet.versionFindings(b, '0.1.0', new Set(['v0.1.0']), new Set(['c']), BEHAV)), ['fleet-version-released'], 'fires')
+})
+
+test('fleet: a branch with a PR but no bump ships no release; a landed one below main is quiet', () => {
+  const pr = new Set(['a'])
+  eq(ids(fleet.versionFindings([{ ref: 'origin/a', version: '0.1.0' }], '0.1.0', new Set(), pr)), ['fleet-version-stale'], 'equal')
+  eq(ids(fleet.versionFindings([{ ref: 'origin/old', version: '0.0.0' }], '0.1.0', new Set())), [], 'landed, no PR')
+})
+
+test('fleet: version compare is numeric, not lexical', () => {
+  eq(ids(fleet.versionFindings([{ ref: 'origin/a', version: '0.10.0' }], '0.9.0', new Set())), [], '0.10 > 0.9')
 })
 
 export function selftest({ json = false } = {}) {

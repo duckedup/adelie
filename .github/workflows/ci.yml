@@ -143,3 +143,44 @@ jobs:
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
         run: cargo miri test --no-default-features
+
+  # The skill's detectors: pure fixtures, no repo state, no network. Nothing else runs them,
+  # so without this a PR could delete a case and go green.
+  checker-selftest:
+    name: adelie-check selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: .claude/skills/adelie/bin/adelie-check selftest
+
+  # The laws against the PR's own diff. Not `--strict`: errors fail, warnings (stale-ticket
+  # fires on every referenced open bead) do not. A merge group has no PR number, hence two
+  # modes; push is skipped, main's history is not a diff.
+  checker-laws:
+    name: adelie-check laws
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the laws need a merge base.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # `--pr` reads the real base ref and the PR body; a merge group diffs against its base.
+      - name: Check repo laws
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            .claude/skills/adelie/bin/adelie-check laws --pr ${{ github.event.pull_request.number }}
+          else
+            base="${{ github.event.merge_group.base_ref }}"
+            base="origin/${base#refs/heads/}"
+            git fetch --quiet origin "${base#origin/}"
+            .claude/skills/adelie/bin/adelie-check laws --base "$base"
+          fi

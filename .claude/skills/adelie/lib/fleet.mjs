@@ -186,6 +186,45 @@ export function formatRehydrate(rows) {
   return `Fleet state (derived, not remembered):\n${lines.join('\n')}\n\n  ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}`
 }
 
+// release.yml publishes only when the v<version> tag is new, so of two branches claiming
+// one version the second to merge ships nothing and says nothing (D0005). "In flight" means
+// an open PR, or a version ahead of main: squash merges rewrite SHAs, so "not an ancestor
+// of main" would sweep in every long-landed branch.
+export function versionFindings(branches = [], mainVersion = null, tags = new Set(), openPrRefs = new Set(), behavioural = []) {
+  const findings = []
+  const byVersion = new Map()
+  // A skill/docs/CI-only branch is not competing for a release, so it neither owes a
+  // bump nor collides with anything. Same exemption laws.versionBump applies.
+  const releases = b => !behavioural.length || !b.changed || b.changed.some(f => behavioural.some(re => re.test(f)))
+  const inflight = branches.filter(b => releases(b) && (
+    openPrRefs.has(b.ref) || openPrRefs.has(b.ref.replace(/^origin\//, '')) ||
+    (mainVersion && cmp(b.version, mainVersion) > 0)))
+
+  for (const { ref, version } of inflight) {
+    if (!byVersion.has(version)) byVersion.set(version, [])
+    byVersion.get(version).push(ref)
+
+    if (tags.has && tags.has(`v${version}`)) {
+      findings.push(err('fleet-version-released', ref, `claims ${version}, which is already tagged`, `v${version} exists, so merging this releases nothing. Bump past it (D0005).`))
+    } else if (mainVersion && cmp(version, mainVersion) <= 0) {
+      findings.push(err('fleet-version-stale', ref, `claims ${version}, not ahead of main's ${mainVersion}`, 'A branch that does not bump the version ships no release when it merges (D0005).'))
+    }
+  }
+
+  for (const [version, refs] of byVersion) {
+    if (refs.length < 2) continue
+    findings.push(err('fleet-version-collision', refs.join(' + '), `all claim ${version}`, `Only the first to merge releases; the rest ship nothing, silently. Decide an order and bump the later ones past ${version}.`))
+  }
+  return findings
+}
+
+const cmp = (a, b) => {
+  const pa = String(a).split('.').map(Number)
+  const pb = String(b).split('.').map(Number)
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0)
+  return 0
+}
+
 export function formatFleet(findings) {
   if (!findings.length) return 'Dispatch is clear. No tree, ticket or overlap findings.'
   const errors = findings.filter(f => f.severity === 'error')

@@ -79,9 +79,17 @@ function runLaws() {
   const libText = git.readAt(t, 'src/lib.rs')
   if (libText) findings.push(...laws.crateAttrWeakened(libText))
 
-  // A --path sweep has no base commit, so the law that compares two revisions does not apply.
-  if (t.base && changed.includes('Cargo.toml')) {
-    findings.push(...laws.newDeps(git.readBase(t, 'Cargo.toml') || '', git.readAt(t, 'Cargo.toml') || ''))
+  // A --path sweep has no base commit, so the laws that compare two revisions do not apply.
+  if (t.base) {
+    const headCargo = git.readAt(t, 'Cargo.toml') || ''
+    const baseCargo = git.readBase(t, 'Cargo.toml') || ''
+    findings.push(...laws.versionBump(baseCargo, headCargo, changed))
+    // Against where origin/main is NOW, not the merge base: the backwards case is invisible
+    // from inside the branch.
+    const originCargo = git.readAtRef('origin/main', 'Cargo.toml')
+    if (originCargo) findings.push(...laws.versionBackwards(baseCargo, headCargo, originCargo, changed))
+    findings.push(...laws.versionAlreadyTagged(baseCargo, headCargo, git.releasedTags(), changed))
+    if (changed.includes('Cargo.toml')) findings.push(...laws.newDeps(baseCargo, headCargo))
   }
 
   findings.push(...laws.testPlacement(added))
@@ -162,6 +170,7 @@ function runFleet() {
     ...fleet.issueFindings(peers, issues, { login: self.login }),
     ...fleet.overlapFindings(peers),
     ...fleet.orphanFindings(trees, peers, self),
+    ...fleet.versionFindings(git.inflightVersions(), mainVersion_(), git.releasedTags(), git.openPrRefs(), laws.BEHAVIOURAL),
   ]
   const state = fleet.rehydrate(peers, issues, trees, git.remoteBranches())
 
@@ -194,11 +203,10 @@ function runPreflight() {
   const issue = tickets.length ? tickets[0].issue : null
   const issueBranches = tickets.length ? tickets[0].issueBranches : []
 
-  // Versions only mean something once a v* tag exists; until then skip the branch walk too.
   const mainVersion = mainVersion_()
   const released = git.releasedTags()
-  const claimed = released.size ? git.inflightVersions() : []
-  const nextVersion = released.size ? pre.nextFreeVersion(mainVersion, claimed, released) : null
+  const claimed = git.inflightVersions()
+  const nextVersion = pre.nextFreeVersion(mainVersion, claimed, released)
 
   const findings = pre.preflight({
     fetched, branch: self.branch, onMain: self.branch === 'main',
@@ -227,14 +235,16 @@ const USAGE = `adelie-check — deterministic checks for this repo's laws and CI
 
   adelie-check laws   [--base <ref>] [--pr <n>] [--path <p>] [--json] [--strict]
       AGENTS.md / decisions / ci.yml rules as detectors: unsafe code and the crate
-      attribute, heavy or -sys deps (D0004), one e2e test binary, Miri ignores that
+      attribute, version bump / backwards / already tagged (D0005), heavy or -sys
+      deps (D0004), one e2e test binary, Miri ignores that
       name no reason, session links in commit messages or the PR body, beads worked
       but not closed, skill lane wiring, AGENTS.md size, dangling D#### pointers.
 
   adelie-check fleet  [--plan <file.json>] [--status] [--json] [--strict]
       Is this dispatch safe? Shared working trees, foreign remotes, dirty or stale
       peer clones, beads that are closed/taken/already-PR'd or queued twice, files
-      two peers both claim, and worktrees left behind by finished agents.
+      two peers both claim, worktrees left behind by finished agents, and two
+      in-flight branches claiming one Cargo.toml version.
       Defaults to .claude/fleet-plan.json, the coordinator's durable state; the
       rest is derived, so a cleared session rehydrates with one run. --status
       prints just that. The plan is
@@ -244,7 +254,8 @@ const USAGE = `adelie-check — deterministic checks for this repo's laws and CI
       Run this FIRST. Fetches origin, then reports whether this tree is fit to
       reason from: behind origin/main, on main, dirty, and — with --issue (a bead
       id: adelie-vnn or vnn) — whether it is closed, already carried by a merged or
-      open PR, assigned to someone else, or already has a remote branch.
+      open PR, assigned to someone else, or already has a remote branch. Also
+      prints the next free Cargo.toml version (D0005).
 
   adelie-check selftest
       Run the fixture suite for the detectors.

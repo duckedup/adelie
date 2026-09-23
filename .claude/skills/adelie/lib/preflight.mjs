@@ -12,8 +12,7 @@ const cmp = (a, b) => {
 }
 
 // The lowest minor above every version already spoken for: main's, each in-flight
-// branch's, and every released tag. Gaps are harmless, so this never reuses one. Only
-// meaningful once there is a release process (a v* tag); see versionLine below.
+// branch's, and every released tag. Gaps are harmless, so this never reuses one.
 export function nextFreeVersion(mainVersion, claimed = [], released = new Set()) {
   if (!mainVersion) return null
   const taken = new Set([...claimed.map(c => c.version)])
@@ -138,10 +137,11 @@ export function formatPreflight(findings, info = {}) {
   return lines.join('\n')
 }
 
-// A "next free version" means nothing until something consumes versions. With no v* tag
-// there is no release process yet (adelie is 0.0.0, publish = false), so say nothing.
+// D0005: every behavioural PR claims a version. 0.0.0 is a placeholder that never releases,
+// so with no tag and main still at 0.0.0 the answer is "bump from the placeholder".
 export function versionLine({ mainVersion, nextVersion, tagCount = 0 } = {}) {
-  if (!mainVersion || !tagCount) return null
+  if (!mainVersion) return null
+  if (!tagCount && mainVersion === '0.0.0' && (!nextVersion || nextVersion === '0.1.0')) return 'origin/main is 0.0.0 (placeholder, never released); next release: bump from the 0.0.0 placeholder, e.g. 0.1.0.'
   return `origin/main is ${mainVersion} (${tagCount} release tag(s)); next free version to claim: ${nextVersion || '(none found)'}.`
 }
 
