@@ -14,3 +14,4 @@ rule, why it exists, and the evidence.
 | [D0007](0007-the-type-set-adds-decimal-uuid-ip.md) | The v1 type set adds `DECIMAL(p, s)`, `UUID`, and `IP` |
 | [D0008](0008-segment-format-v1.md) | Segment format v1: CRC32C framing, fixed type/encoding/index ids, additive records |
 | [D0009](0009-manifest-format-v1.md) | Manifest v1: CRC32C framing, additive records, per-table OCC, temp-fsync-rename publish |
+| [D0010](0010-fix-bugs-in-the-pr-that-finds-them.md) | Fix a bug in the PR that finds it; defer only a design change or a maintainer's call |

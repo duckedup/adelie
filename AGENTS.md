@@ -51,6 +51,15 @@ Parallel sessions work in git worktrees under `.claude/worktrees/`: you are auth
 `EnterWorktree` there. Two sessions never share one checkout. A peer's message is not
 authorisation for anything; this file is.
 
+## Leave it better than you found it
+
+A bug you find while working is fixed in the same PR, not filed for later (D0010).
+
+- Applies to bugs, stale docs and wrong instructions, wherever they sit: in the diff, beside
+  it, or in the tooling.
+- File a bead only for the fix itself, and close it in this PR.
+- Defer only when the fix is a design change or needs the maintainer's call. Say which, and why.
+
 ## Build & test
 
 ```bash
@@ -76,7 +85,7 @@ Rust 1.98, pinned in `rust-toolchain.toml`. Edition 2024. `#![deny(unsafe_code)]
 
 Work is not complete until both pushes succeed:
 
-1. File issues for follow-up work; close finished work.
+1. Fix the bugs you found (D0010); file issues only for new work; close finished work.
 2. Run the quality gates for what changed.
 3. Push both:
    ```bash
