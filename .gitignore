@@ -6,3 +6,9 @@
 .beads/proxieddb/
 *.gate.lock*
 target/
+
+# Transient /adelie blueprints; deleted once implemented
+BLUEPRINT-*.md
+
+# /adelie workflow worktrees
+.claude/worktrees/

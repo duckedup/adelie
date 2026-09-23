@@ -1,0 +1,146 @@
+---
+name: adelie
+description: Carry work from a thought to a shipped PR — assess whether it belongs, research and blueprint it, implement it with parallel agents, simplify or speed up code that already ships, review it, ship it, or coordinate a fleet of peer sessions doing all of that. Use when the user invokes /adelie with a subcommand (fit, spec, implement, simplify, optimize, review, ship, fleet) or with a beads issue id (e.g. adelie-vnn) or a description.
+argument-hint: "[fit|spec|implement|simplify|optimize|review|ship|fleet] <issue number | description | PR number | path | who does what>"
+model: opus
+allowed-tools: [Read, Write, Edit, Bash, Grep, Glob, Agent, Workflow, AskUserQuestion, ReportFindings, TodoWrite, ListAgents, SendMessage, EnterWorktree, ExitWorktree]
+---
+
+Arguments: $ARGUMENTS
+
+The judgement lives here; the rules live in code. `bin/adelie-check` decides which
+verification lanes a change needs and which repo laws it breaks — never re-derive either
+by reading AGENTS.md and guessing.
+
+```
+.claude/skills/adelie/bin/adelie-check preflight [--issue <id>] [--no-fetch] [--json]
+.claude/skills/adelie/bin/adelie-check lanes [--base <ref>|--pr <n>|--paths a,b] [--json]
+.claude/skills/adelie/bin/adelie-check laws  [--base <ref>|--pr <n>] [--json] [--strict]
+.claude/skills/adelie/bin/adelie-check selftest
+```
+
+**`preflight` runs first, always — before you read the ticket, before you read a line of
+code.** It fetches `origin` and then answers the one question every judgement below rests
+on: is this tree fit to reason from. It is a script rather than a paragraph because the
+failure it prevents is not one anybody reasons their way out of.
+
+## Routing
+
+Read the first word of `$ARGUMENTS`, then **read that lane's file and follow it**. Only the
+lane you need is loaded. A bold lane name anywhere in these files means the same thing:
+open `lanes/<name>.md` and follow it.
+
+| First word | Read |
+|---|---|
+| `fit` | `lanes/fit.md` |
+| `spec` | `lanes/spec.md` |
+| `implement` | `lanes/implement.md` |
+| `simplify` | `lanes/simplify.md` |
+| `optimize` | `lanes/optimize.md` |
+| `review` | `lanes/review.md` |
+| `ship` | `lanes/ship.md` |
+| `fleet` | `lanes/fleet.md` |
+| anything else | **Full pipeline**: `lanes/spec.md` → scope gate → plan gate → `lanes/implement.md` → `lanes/review.md` → offer `lanes/ship.md` |
+
+Paths are relative to `.claude/skills/adelie/`. The rest of `$ARGUMENTS` is the target: an
+issue number (`#42`), **several issue numbers**, a PR number (review only), a path, or a
+freeform description. With no arguments at all, run `lanes/review.md` against the working
+tree — that is the cheapest useful thing.
+
+`simplify` and `optimize` are the two lanes that start from the **code that already ships**
+rather than from a ticket, so their target is a scope (a path, a subsystem in words, or
+nothing for the whole repo) and they file the issue themselves. Both reuse the rest of the
+pipeline unchanged: a sweep in place of `spec`'s research, then the same blueprint format, the
+same `implement.workflow.js`, the same `review.workflow.js`, the same **Ship**. Neither may
+change what adelie does — that is the line that separates them from feature work, and each lane
+file says how it is enforced.
+
+**Several tickets are one job, not N jobs**: one branch, one blueprint, one
+PR closing all of them. Do not open a branch per ticket unless the user asks or one is
+blocked. `lanes/spec.md` step 4 has the reasoning and the naming.
+
+## Preflight (every subcommand, `review` and `fit` included)
+
+1. **`adelie-check preflight --issue <id>` — first, before anything else.** `--issue` takes a
+   comma-separated list (`--issue adelie-hzi,adelie-61d`); pass every ticket in the bundle, since
+   a bundle is only as sound as its stalest premise and one already-shipped ticket among three
+   blocks the lot. It fetches
+   `origin`, then blocks on every premise that would otherwise be silently stale: HEAD
+   behind `origin/main`, on `main`, the ticket already closed, already carried by a merged
+   or open PR, already claimed by a remote branch or another assignee. It also prints the
+   next free `Cargo.toml` version, which is the number **Ship** step 2 needs and which no
+   branch can work out from inside its own tree (D0005).
+
+   **Errors block. Do not proceed and do not reason around them** — every one of them
+   means a fact you are about to rely on describes a `main` that has since moved. The
+   motivating case (found in nidus): a session evaluating `nidus-lvo.2` read its dependency `nidus-lvo.1` as
+   "committed locally, unpushed, no PR" and planned a whole branch strategy on it. `lvo.1`
+   had merged as #218 an hour earlier. Nothing about that tree looked wrong, which is the
+   point — a stale premise produces confident, coherent, wrong work, and the only tell is a
+   fetch nobody remembered to do. `--no-fetch` exists for an offline box and reports itself
+   as an error, because a preflight that did not look is not a preflight.
+
+   `review` and `fit` need this as much as the rest: `review` compares against
+   `origin/main` (a stale base examines a range nobody meant), and `fit` step 1
+   asks whether an idea is already decided, which is a question about issue state.
+2. Resolve the target — **every** id in it, not just the first. If it matches `adelie-<id>`,
+   `bd show adelie-<id>`; read the
+   title, description, labels, and comments (`bd comments adelie-<id>`). If `bd show` cannot find
+   it, say so and ask whether to proceed from the description alone — do not invent the
+   issue's contents.
+3. If the target is a description with no issue, file one before writing code
+   (`bd create "…" -t <type> -p <0-4> -d "…"`) and `bd update adelie-<id> --claim`.
+4. If not already on a branch for this work, create `austin/<id>-<slug>` (3–5 word kebab
+   slug) from an up-to-date `main`. If the tree is dirty, ask before touching it: stash and
+   branch, commit here first, or stop.
+
+## Rules
+
+- Blueprints are `BLUEPRINT-<id>.md`; they are transient, gitignored, and deleted once
+  implemented. `SPEC.md` is the product spec and is never touched by this skill.
+- Never cross a gate the user has not approved, and never commit to `main`. Writing a
+  blueprint before the scope gate is crossing one: the file is the plan.
+- Track work in beads (`bd`). No TodoWrite lists, no markdown checklists, no MEMORY.md —
+  durable knowledge goes in the issue that owns it, or in `SPEC.md`. Issue state is not in
+  the repo: `bd dolt push` publishes it, `just bd-setup` sets up a fresh clone.
+- Implementation agents are sonnet in worktrees; merging, verifying, and reviewing stay on
+  the main thread so one context has seen the whole change. The two sweep lanes invert only
+  the first half: their scanners are opus, because judging what is genuinely duplicated or
+  genuinely hot is the hard part and implementing the answer is not.
+- `adelie-check` is the source of truth for lanes, laws and dispatch safety. If it is wrong, fix
+  the checker and its selftest — do not work around it in prose.
+- **Assert the behaviour, not that the machinery ran.** The rule below is reactive: it catches a
+  no-failing-mode check once you construct the counterfactual. This one is preventive and reads
+  off the assertion itself — does it name what would be wrong if the change were absent, or only
+  that something happened? "The store opened", "the command ran", "the diff was checked" are all
+  true whether or not the code works, which is why they go green and why they do not look wrong.
+  Worked example: an e2e test (in nidus) drove `nidus search` across a restart to prove an open-time profile
+  merge, and passed with the merge disabled, because `search` has no profile-dependent output. It
+  asserted the store opened. Eight instances in one fleet run, so treat it as the default failure
+  of a test written in a hurry.
+- **Ask whether a check could have failed, not whether it passed.** Three times in two days a
+  check ran green and proved nothing: regression tests for a p1 that passed without the fix
+  (they corrupted a compressed byte, so they tested the decompressor), a fails-without-fix
+  signal that only ever appeared by accident, and a `git log -6` sample that could not have
+  disconfirmed the convention it was sampling. A green result from a check that had no failing
+  mode is indistinguishable from no check. For a regression test, go and watch it go red.
+- **An acceptance criterion you inherit is a check too, and it can arrive already unfalsifiable.**
+  The rule above assumes you wrote the check; this one does not. In nidus, nidus-g4h shipped with
+  "assert the reopened store returns the upserted rows through a filtered query" — true with
+  and without the fix, because a watermark guard rebuilds the index anyway. Nobody could have
+  read that off the ticket: it took tracing every reader of the flag. A bad criterion is worse
+  than a bad test, because it propagates — into the blueprint, then into every agent that
+  reads it, each of which is being graded against it. So construct the counterfactual for each
+  criterion *before* the scope gate, and when one has no failing mode say so, fix the ticket,
+  and ship the criterion that does.
+- **Verification is CI's job, not this session's.** Do not run `just ci`, `just ci-cli`,
+  `test-e2e` or Miri locally. `adelie-check lanes` is a coverage map — which CI
+  jobs touch which files — not a list of commands. **Ship** pushes, watches the checks, and
+  fixes what goes red. Two exceptions, both narrow: `adelie-check laws`, which CI does not run,
+  and a fails-without-fix counterfactual, which is one targeted test on a **committed** tree.
+  The reason is that a local run is evidence only about a tree nobody was writing to, and this
+  pipeline writes constantly — merging patches, reverting a file to mutate it, formatting. A
+  lane overlapping any of that can hang or go red for something nowhere in the diff, and the
+  debugging is a detour into a machine-local artefact. A clean checkout is CI's whole point.
+- Peers get worktrees under `.claude/worktrees/`, never a shared tree and never a fresh clone.
+  Prune them when the ticket ships.
