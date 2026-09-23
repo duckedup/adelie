@@ -1,107 +1,61 @@
-# Agent Instructions
+# Project Instructions for AI Agents
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+adelie: a pure-Rust columnar analytics store with SQL. This is the one instruction file for
+every agent (Claude Code, Codex, Cursor); there is no CLAUDE.md. Why a rule exists lives in
+`decisions/` (the `D####` pointers).
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [sync-concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+## Communication style
 
-## Quick Reference
+Be direct, short, and straight to the point. Lead with the answer or the result. Say plainly
+when something failed or was skipped.
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+## Issue tracking: beads (`bd`)
 
-## Non-Interactive Shell Commands
-
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
-
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
-
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
-
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
-
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
+All work is tracked in **beads** via the `bd` CLI. Do not use GitHub Issues, TodoWrite,
+TaskCreate, markdown TODO lists, or MEMORY.md files.
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+bd ready                              # available work (open, nothing blocking it)
+bd show adelie-xxxx                   # view an issue
+bd update adelie-xxxx --claim         # claim work
+bd close adelie-xxxx --reason "…"     # complete work
+bd create "title" -t task -p 2        # file new work
+just bd-sync                          # pull then push issue state
 ```
 
-### Rules
+### The database is shared over the repo's own git remote
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+Issue state lives in a Dolt database under `.beads/`, which is **local and gitignored**. It is
+shared by pushing to `refs/dolt/data` on `origin`, this repo itself. So **`bd dolt push` is as
+load-bearing as `git push`**: `git push` does not carry issue changes. Tracked in git are only
+the files a fresh clone needs to find the database (`.beads/config.yaml`,
+`.beads/metadata.json`, `.beads/.gitignore`, `.beads/hooks/`).
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
+- **Fresh clone: run `just bd-setup`.** It recovers the database from `refs/dolt/data` and
+  wires the remote. Needs `dolt` (`brew install dolt`). Safe to re-run.
+- **Never `bd init`, never `bd bootstrap`** (D0002). If you ever see a
+  `bd dolt push --force` prompt, stop.
+- A **git worktree** needs no setup: it shares the main clone's database.
+- **Never track `.beads/issues.jsonl`** (D0001). The shared state is the Dolt ref.
+- **Close the ticket yourself when the PR merges.** Nothing auto-closes a bead.
 
-## Agent Context Profiles
+## Session completion
 
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+Work is not complete until both pushes succeed:
 
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
+1. File issues for follow-up work; close finished work.
+2. Run the quality gates for what changed.
+3. Push both:
    ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
    bd dolt push
-   git push
-   git status
+   git pull --rebase && git push
+   git status                   # must show "up to date with origin"
    ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
 
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
+## Non-interactive shell commands
+
+Use non-interactive flags (`cp -f`, `mv -f`, `rm -f`, `rm -rf`; `ssh -o BatchMode=yes`;
+`apt-get -y`; `HOMEBREW_NO_AUTO_UPDATE=1`) so an aliased `-i` never hangs the session.
 
 <!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
 ## Beads Issue Tracker

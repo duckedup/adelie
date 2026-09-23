@@ -79,3 +79,9 @@ bd.db
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default
 # since no pattern above ignores them.
+
+# JSONL exports are a local viewer/backup artifact, never the shared state.
+# A tracked export lets one branch revert another's closes (D0001).
+issues.jsonl
+events.jsonl
+interactions.jsonl
