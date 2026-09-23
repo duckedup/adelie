@@ -1,12 +1,18 @@
 [package]
 name = "adelie"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 description = "A pure-Rust columnar analytics store with SQL."
 repository = "https://github.com/duckedup/adelie"
 license = "MIT"
-exclude = [".agents/", ".beads/", ".claude/", ".codex/", ".cursor/", ".github/", "AGENTS.md", "decisions/", "justfile", "scripts/"]
+exclude = [".agents/", ".beads/", ".claude/", ".codex/", ".cursor/", ".github/", "AGENTS.md", "decisions/", "justfile", "scripts/", "harness/", "bench/", "tests/"]
+
+# harness/ is the zero-dependency test harness (a dev-dependency, never published). bench/ is
+# its own workspace so DuckDB never enters this lockfile or the build budget (D0006).
+[workspace]
+members = ["harness"]
+exclude = ["bench"]
 
 [lib]
 name = "adelie"
@@ -27,6 +33,9 @@ default = ["cli"]
 cli = []
 
 [dependencies]
+
+[dev-dependencies]
+adelie-harness = { path = "harness" }
 
 # Prebuilt-binary fetch for `cargo binstall adelie`. Release assets are
 # `adelie-<target>.tar.gz` (`.zip` on Windows), each holding the bare `adelie` binary.

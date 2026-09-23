@@ -1,0 +1,16 @@
+[package]
+name = "adelie-bench"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "MIT"
+description = "DuckDB differential testing and benchmarks for adelie. Its own workspace (D0006)."
+
+# Its own workspace, deliberately: DuckDB's bundled C++ build must never enter the root
+# lockfile or the root build budget (D0006).
+[workspace]
+
+[dependencies]
+adelie-harness = { path = "../harness" }
+duckdb = { version = "1", features = ["bundled"] }

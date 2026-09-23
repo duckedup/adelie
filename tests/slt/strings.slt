@@ -1,0 +1,44 @@
+# Pins lower, upper, length, substr, and concatenation with ||.
+# SPEC §8: string basics (lower, upper, length, substr).
+
+statement ok
+CREATE TABLE words (w TEXT)
+
+statement ok
+INSERT INTO words VALUES ('Hello'), ('World')
+
+query T rowsort
+SELECT lower(w) FROM words
+----
+hello
+world
+
+query T
+SELECT upper('HeLLo')
+----
+HELLO
+
+query I
+SELECT length('hello')
+----
+5
+
+query T
+SELECT substr('hello world', 1, 5)
+----
+hello
+
+query T
+SELECT substr('hello world', 7)
+----
+world
+
+query T
+SELECT 'foo' || 'bar'
+----
+foobar
+
+query T
+SELECT 'a' || 'b' || 'c'
+----
+abc

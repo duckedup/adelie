@@ -64,6 +64,8 @@ Rust 1.98, pinned in `rust-toolchain.toml`. Edition 2024. `#![deny(unsafe_code)]
 
 - **Build budget:** the lean clean build stays under 60s, CI-enforced. A dependency that
   blows it, or any bundled-C crate, is a design change: issue first (D0004).
+- **DuckDB is test-only and lives in `bench/`**, its own Cargo workspace, never a dependency
+  of the root crate (D0006). The test harness is `harness/` (zero deps, unpublished).
 - **CI:** a required check's workflow lists `merge_group:` (D0003).
 - **Releases:** bump `Cargo.toml` `version` in every PR with a user-visible or behavioural
   change; `release.yml` publishes only a new version (D0005).

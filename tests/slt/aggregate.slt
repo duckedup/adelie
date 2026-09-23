@@ -1,0 +1,59 @@
+# Pins count, sum, avg (type R), min, max, GROUP BY, HAVING, grouping on an expression, and
+# empty-input aggregates.
+# SPEC §8: aggregates (count, sum, avg, min, max).
+
+statement ok
+CREATE TABLE sales (cat TEXT, amt INTEGER)
+
+statement ok
+INSERT INTO sales VALUES ('a', 10), ('a', 20), ('b', 5), ('b', 15), ('b', 25)
+
+query TIIRII rowsort
+SELECT cat, count(*), sum(amt), avg(amt), min(amt), max(amt) FROM sales GROUP BY cat
+----
+a 2 30 15.000 10 20
+b 3 45 15.000 5 25
+
+query TI rowsort
+SELECT cat, sum(amt) FROM sales GROUP BY cat HAVING sum(amt) > 40
+----
+b 45
+
+query II rowsort
+SELECT amt % 2, count(*) FROM sales GROUP BY amt % 2
+----
+0 2
+1 3
+
+statement ok
+CREATE TABLE empty_t (v INTEGER)
+
+query I
+SELECT count(*) FROM empty_t
+----
+0
+
+query I
+SELECT count(v) FROM empty_t
+----
+0
+
+query I
+SELECT sum(v) FROM empty_t
+----
+NULL
+
+query R
+SELECT avg(v) FROM empty_t
+----
+NULL
+
+query I
+SELECT min(v) FROM empty_t
+----
+NULL
+
+query I
+SELECT max(v) FROM empty_t
+----
+NULL

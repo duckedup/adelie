@@ -1,0 +1,64 @@
+# Pins literals, arithmetic (+ - * %), comparison, CASE, CAST, column aliases, DISTINCT.
+# SPEC §8: SELECT front end, arithmetic/comparison/CASE/CAST functions.
+
+statement ok
+CREATE TABLE t (a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (2, 30)
+
+query I
+SELECT 1 + 2
+----
+3
+
+query I
+SELECT 10 - 3
+----
+7
+
+query I
+SELECT 4 * 5
+----
+20
+
+query I
+SELECT 7 % 3
+----
+1
+
+query T
+SELECT 1 < 2
+----
+true
+
+query T
+SELECT 2 = 3
+----
+false
+
+query T
+SELECT CASE WHEN 1 > 2 THEN 'big' ELSE 'small' END
+----
+small
+
+query I
+SELECT CAST('42' AS INTEGER)
+----
+42
+
+query R
+SELECT CAST(5 AS DOUBLE)
+----
+5.000
+
+query I
+SELECT a AS renamed FROM t WHERE a = 1
+----
+1
+
+query I rowsort
+SELECT DISTINCT a FROM t
+----
+1
+2

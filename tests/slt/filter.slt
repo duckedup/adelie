@@ -1,0 +1,60 @@
+# Pins WHERE with AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS [NOT] NULL.
+# SPEC §8: SELECT ... WHERE, string basics (LIKE/ILIKE).
+
+statement ok
+CREATE TABLE t (id INTEGER, name TEXT, score INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1, 'Alice', 50), (2, 'bob', NULL), (3, 'CHARLIE', 75), (4, NULL, 20), (5, 'dave', 90)
+
+query I rowsort
+SELECT id FROM t WHERE score > 40 AND score < 80
+----
+1
+3
+
+query I rowsort
+SELECT id FROM t WHERE score < 30 OR score > 80
+----
+4
+5
+
+query I rowsort
+SELECT id FROM t WHERE NOT (score > 60)
+----
+1
+4
+
+query I rowsort
+SELECT id FROM t WHERE id IN (1, 3, 5)
+----
+1
+3
+5
+
+query I rowsort
+SELECT id FROM t WHERE score BETWEEN 50 AND 80
+----
+1
+3
+
+query I
+SELECT id FROM t WHERE name LIKE 'char%'
+
+query I
+SELECT id FROM t WHERE name ILIKE 'char%'
+----
+3
+
+query I
+SELECT id FROM t WHERE score IS NULL
+----
+2
+
+query I rowsort
+SELECT id FROM t WHERE name IS NOT NULL
+----
+1
+2
+3
+5

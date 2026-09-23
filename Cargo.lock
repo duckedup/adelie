@@ -4,4 +4,11 @@ version = 4
 
 [[package]]
 name = "adelie"
-version = "0.1.0"
+version = "0.1.1"
+dependencies = [
+ "adelie-harness",
+]
+
+[[package]]
+name = "adelie-harness"
+version = "0.0.0"

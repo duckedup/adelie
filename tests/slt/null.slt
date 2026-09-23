@@ -1,0 +1,52 @@
+# Pins three-valued logic (NULL = NULL, NULL AND/OR), NULLs in aggregates (count(x) vs
+# count(*)), and NULL ordering pinned with explicit NULLS FIRST/LAST.
+# SPEC §8: comparison and boolean functions, aggregates, ORDER BY.
+
+statement ok
+CREATE TABLE n (a INTEGER)
+
+statement ok
+INSERT INTO n VALUES (1), (NULL), (2), (NULL), (3)
+
+query T
+SELECT NULL = NULL
+----
+NULL
+
+query T
+SELECT NULL AND false
+----
+false
+
+query T
+SELECT NULL AND true
+----
+NULL
+
+query T
+SELECT NULL OR true
+----
+true
+
+query II
+SELECT count(a), count(*) FROM n
+----
+3 5
+
+query I
+SELECT a FROM n ORDER BY a NULLS FIRST
+----
+NULL
+NULL
+1
+2
+3
+
+query I
+SELECT a FROM n ORDER BY a NULLS LAST
+----
+1
+2
+3
+NULL
+NULL
