@@ -17,4 +17,4 @@ crates.io instead of failing.
 
 - `.github/workflows/release.yml`.
 - nidus D0007 and nidus #124 (concurrent release runs racing the tag).
-- Needs the `CARGO_REGISTRY_TOKEN` repo secret.
+- Uses the `CARGO_REGISTRY_TOKEN` organization secret (visible to this repo).
