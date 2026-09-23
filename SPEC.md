@@ -1,12 +1,13 @@
 # adelie: specification
 
-**Status:** draft · 2026-09-22 · tracked by `adelie-vnn`
+**Status:** draft · 2026-09-23 · tracked by `adelie-vnn`, `adelie-un4`
 
-adelie is a pure-Rust columnar analytics store with SQL. It runs in process as a library,
-behind `adelie serve` over HTTP, as an MCP server, or in a browser on wasm. Its bytes live
-on local disk. Throw a table at it and it does math fast. Its first specialised workload is
-OpenTelemetry: ingest traces, logs, and metrics, render trace waterfalls, and let an AI agent
-query all of it through built-in MCP.
+adelie is a pure-Rust columnar analytics store with SQL that explains its own data, for people
+and agents alike. It runs in process as a library, behind `adelie serve` over HTTP, as an MCP
+server, or in a browser on wasm. Its bytes live on local disk. Throw a table at it and it does
+math fast; ask it what changed and it tells you where (§17). Its first specialised workload is
+OpenTelemetry: ingest traces, logs, and metrics, render trace waterfalls, and find where a
+regression is concentrated from the UI, the CLI, SQL, or an agent over MCP.
 
 > _adelie_: the penguin. Small, fast, and at home in the cold.
 
@@ -18,6 +19,18 @@ query all of it through built-in MCP.
 crate graph and a general-purpose engine), and the fast engines that don't are large C++
 trees (DuckDB, ClickHouse). Nothing is a small, fast, pure-Rust columnar SQL store that builds
 in seconds, embeds as a normal dependency, and scales out on its own storage model.
+
+**The idea.** Analytics engines return rows and leave the explaining to whoever reads them.
+adelie also explains: which attributes account for a change (`elucidate()`), what a table
+contains (`profile()`), and what a million log lines say (`patterns()`). These are deterministic
+algorithms over the same aggregation machinery as `GROUP BY`, with no model inside the engine.
+People and agents are equal users: every feature is SQL first and returns an ordinary table,
+and the UI, CLI, and MCP are renderings of that table (§17.6).
+
+**Our own versions, not copies.** adelie learns from ClickHouse and DuckDB but does not port
+their features one to one. Each capability is designed for adelie's model: dynamic columns,
+mergeable aggregate states, a single durability path, and results that serve both a person and
+an agent (§16).
 
 **The constraints are the product.** Three commitments every change is judged against.
 Trading one away is a design change (a decision record and an issue first), never an
@@ -59,6 +72,8 @@ implementation detail.
 - Fast analytical SQL over columnar data: scans, filters, aggregates, joins, top-k.
 - Wide, sparse, schema-on-write tables: a new column appears the first time a row carries it.
 - OpenTelemetry as a first-class workload: OTLP ingest, trace waterfalls, log search.
+- Analytics that explains itself: `elucidate()`, `profile()`, and `patterns()` (§17), for
+  people and agents through the same SQL.
 - Built-in MCP so an agent can explore and analyse data safely, locally and at scale.
 - One architecture from a laptop to a cluster: scale is a quantity, not a mode.
 
@@ -97,8 +112,12 @@ implementation detail.
 | `TIMESTAMP` | UTC nanoseconds since the epoch; no time zone is stored |
 | `DATE` | days since the epoch |
 | `LIST<T>` | homogeneous list of a scalar type |
+| `DECIMAL(p, s)` | exact; money and counters that must not drift |
+| `UUID` | 16 bytes, rendered canonically |
+| `IP` | one type for IPv4 and IPv6, with CIDR containment |
 
-Decimal, map, and struct types are deferred.
+There is no `ENUM` type (low-cardinality strings are dictionary-encoded automatically) and no
+`MAP` or `JSON` type (dynamic columns are the map, §16.3). `STRUCT` is deferred.
 
 **Dynamic columns and type conflicts.** Each segment stores only the columns its rows carry,
 each with one type. Across segments a column keeps the type it was first created with; a
@@ -154,10 +173,14 @@ unit of pruning and of parallel work).
 
 **Encodings** (pure Rust, chosen per chunk by the writer):
 
-- Integers and timestamps: plain, delta, frame-of-reference with bit-packing, RLE.
+- Integers and timestamps: plain, delta, delta-of-delta (regular timestamps), frame-of-reference
+  with bit-packing, RLE.
+- Floats: plain, XOR against the previous value (slowly changing metrics).
 - Strings: dictionary (low cardinality), plain with offsets, FSST (later).
 - Booleans and null masks: bitmaps, RLE.
 - An optional block compressor on top: `lz4_flex`. No zstd (C dependency).
+- There are no per-column codec declarations: the writer picks per chunk by trying candidates
+  on a sample. A table may pin an encoding for a column; skip structures are adaptive (§16.2).
 
 **Manifest.** The one mutable object: the live segment set per table, each segment's partition,
 row count, and column summary, the table schemas, and a monotonic version. It is CRC-checked
@@ -243,15 +266,21 @@ dependency.
 | `COPY t FROM '<path>'` | CSV and NDJSON |
 | `DELETE ... WHERE` | tombstone predicate (§6) |
 | `EXPLAIN` | the plan, with pruning estimates |
+| `CREATE ROLLUP` / `DROP ROLLUP` | pre-aggregation maintained by the store (§16.1) |
+| Window functions | `OVER (PARTITION BY … ORDER BY … ROWS/RANGE …)`: `row_number`, `rank`, `lag`, `lead`, running aggregates |
+| Table functions | `elucidate()`, `profile()`, `patterns()` (§17), files in place (§16.4) |
 
-Excluded in v1: `UPDATE`, transactions, correlated subqueries. Deferred: window functions,
-scalar subqueries, non-equi joins.
+adelie's own SQL ergonomics (files in place, `LIMIT n PER`, `FILL`, `NEAREST JOIN`, path
+wildcards) are in §16.4. Excluded in v1: `UPDATE`, transactions, correlated subqueries.
+Deferred: scalar subqueries, non-equi joins other than `NEAREST JOIN`.
 
 **Functions (v1).** Arithmetic, comparison, boolean, `CASE`, `CAST`, string basics
 (`lower`, `upper`, `length`, `substr`, `LIKE`, `ILIKE`, `regexp_match`), time
 (`date_trunc`, `time_bucket`, `now`, extraction), and aggregates: `count`, `sum`, `avg`,
 `min`, `max`, `approx_count_distinct` (HyperLogLog), `quantile(x, q)` and `approx_quantile`
-(DDSketch: mergeable, relative-error, right for latency).
+(DDSketch: mergeable, relative-error, right for latency), `top_k`, `arg_min`/`arg_max`,
+`list_agg`, `histogram`. Any aggregate takes a standard `FILTER (WHERE …)` clause. Every
+aggregate has a mergeable state, which rollups (§16.1) and `elucidate()` (§17.1) build on.
 
 **Planner.** Rule-based: projection pruning, predicate pushdown, partition and row-group pruning
 from manifest and footer stats, constant folding, partial/final aggregate split, join-side
@@ -288,8 +317,12 @@ attributes to `attributes.<key>`. Dynamic columns (§3) make sparse attributes o
 SQL reaches it through `MATCH(body, '<query>')` in `WHERE`, and `score()` in the select list.
 The index is derived and rebuildable; a missing or corrupt index falls back to a scan.
 
-**Run tagging.** A `run.id` resource attribute is a first-class filter, so an agent can tag a
-test run and query exactly its own telemetry.
+**Log patterns.** Every log line gets a `pattern_id` at ingest (§17.3), so `patterns()` turns a
+million lines into a short list of templates with counts.
+
+**Run tagging.** A `run.id` resource attribute is a first-class filter, so a person or an agent
+can tag a test run and query exactly its own telemetry. Comparing two runs is `compare_runs()`
+(§17.4).
 
 ---
 
@@ -327,8 +360,12 @@ Built in, not bolted on: `adelie mcp` over stdio, and `/mcp` on `adelie serve`.
 | `sql` | a read-only query, result shaped to a budget |
 | `get_trace` | a compact span tree for one trace |
 | `find_errors` | error spans and logs for a service and window, grouped |
-| `compare_windows` | what changed between two time windows (rates, latency, errors) |
 | `top_slow` | slowest operations or endpoints for a window |
+| `elucidate` | which attributes account for a change in a metric (§17.1) |
+| `profile` | a table's data card (§17.2): the first call an agent should make |
+| `patterns` | log templates with counts for a window (§17.3) |
+| `compare_runs` | `elucidate` plus new and vanished log patterns between two runs (§17.4) |
+| `save_finding` | records a finding with the SQL that verifies it (§17.5) |
 
 **Guardrails.**
 
@@ -344,6 +381,9 @@ Built in, not bolted on: `adelie mcp` over stdio, and `/mcp` on `adelie serve`.
 ## 12. UI
 
 `adelie serve` embeds a small web UI: a SQL console, a trace search, and the trace waterfall.
+Every chart and waterfall carries **Elucidate**: select a spike or a slow span and see the ranked
+findings, each with before/after and a link to the query that verifies it. Tables open on their
+`profile()`; logs have a **Patterns** tab; saved findings are listed beside the SQL console.
 Assets are compiled into the binary; no separate deploy. The UI's stack is open question Q4, and
 it must not break the default build budget.
 
@@ -373,10 +413,11 @@ src/
   types/        type system, values, casts
   format/       segment writer and reader, encodings, CRC framing
   manifest/     manifest codec, publish, snapshots, retention
-  store/        tables, write buffer, flush, compaction, deletes, lock
+  store/        tables, write buffer, flush, compaction, deletes, rollups, lock
   exec/         batches, kernels, operators, morsel scheduler, memory budget
   sql/          lexer, parser, binder, planner
   fts/          tokeniser, inverted index, BM25
+  analysis/     elucidate, profile, patterns, findings (§17)
   otel/         OTLP decoder, table mapping, trace functions
   cli/          `adelie` binary            (feature: cli)
   server/       HTTP, OTLP endpoints, UI    (feature: serve)
@@ -395,5 +436,160 @@ src/
 | Q4 | UI stack: plain JS with no build step, or a prebuilt bundle? |
 | Q5 | Deduplication of retried writes for general tables: idempotency keys, or none? |
 | Q6 | Parquet import/export: which dependency, and does it fit the build budget? |
-| Q7 | When do window functions land? |
+| Q7 | Rollup matching: which query shapes may the planner answer from a rollup (§16.1)? |
 | Q8 | Browser mode threading: single-threaded executor, or wasm threads where available? |
+| Q9 | `elucidate()` significance: which test, and how is it corrected across many candidates? |
+| Q10 | Log patterns for multi-line logs (stack traces): one pattern per entry, or per first line? |
+| Q11 | Adaptive skip structures: what query-log evidence builds one, and what drops it (§16.2)? |
+
+---
+
+## 16. Analysis features: adelie's own versions
+
+Each of these answers a need ClickHouse or DuckDB also answers, designed for adelie's model
+instead of ported.
+
+### 16.1 Rollups
+
+A **rollup** is a pre-aggregated view of a table, declared once and maintained by the store:
+
+```sql
+CREATE ROLLUP spans_1m ON otel.spans
+  GROUP BY service.name, attributes.http.route, time_bucket('1m', start_time)
+  AGGREGATE count(), count() FILTER (WHERE status = 'error'), approx_quantile(duration, 0.99);
+```
+
+- **Written in the same flush as the base rows.** A rollup's partial aggregate states are
+  encoded into their own segment and published in the same manifest as the rows they summarise
+  (§6). A rollup is never stale and never ahead of its table; there is no second write path.
+- **Merged at compaction.** Compaction merges rollup states the way it merges rows.
+- **Used without being named.** The planner answers a query from a rollup when the query's
+  grouping, filters, and aggregates are a coarsening of it (Q7). Nobody writes `FROM spans_1m`.
+- **Its own retention.** A rollup may outlive its base rows: raw spans for 7 days, the rollup
+  for a year.
+- `elucidate()` and `profile()` read rollups when they cover the question.
+
+### 16.2 Adaptive pruning
+
+- Encodings are chosen per chunk by the writer (§5); nobody declares codecs.
+- Min/max stats are always kept. Other **skip structures** (bloom filter, value set, n-gram
+  index) are built per column at compaction when the query log shows predicates on that column
+  and its profile (§17.2) says the structure would prune. Unused ones are dropped (Q11).
+- The store tunes its own pruning from its own query log. A table may pin a structure; `EXPLAIN`
+  shows which structures pruned what.
+
+### 16.3 Dynamic columns are the map
+
+- There is no `MAP` or `JSON` type. Attributes are real columns (§3), addressed by path:
+  `attributes.http.route`.
+- **Wildcards over paths:** `SELECT attributes.http.*` selects every column under that path;
+  `SELECT * EXCLUDE (resource.*)` drops a subtree. The same wildcard works in `GROUP BY` and in
+  `elucidate(by => …)`.
+- NDJSON ingest flattens nested objects into paths the same way.
+
+### 16.4 SQL ergonomics
+
+| Feature | Example |
+|---|---|
+| Files in place | `FROM 'logs/*.ndjson' WHERE level = 'error'`: a file glob is a table (CSV, NDJSON) |
+| `FROM`-first | `FROM otel.spans SELECT count()` |
+| `GROUP BY ALL` | group by every non-aggregate in the select list |
+| `EXCLUDE` | `SELECT * EXCLUDE (body)` |
+| Top n per group | `ORDER BY duration DESC LIMIT 3 PER service.name` |
+| Gap filling | `GROUP BY time_bucket('1m', time) FILL 0` (or `FILL previous`, `FILL linear`) |
+| As-of join | `NEAREST JOIN deploys d ON s.service = d.service AND s.time >= d.time` |
+| Lists | `list_map(xs, x -> x * 2)`, `list_filter`, `unnest` |
+
+### 16.5 adelie observes itself
+
+adelie emits its own telemetry (each query as a trace with a span per operator, flushes and
+compactions as spans, engine metrics) into `adelie.*` tables in the OTel shape. The waterfall
+renders adelie's own query plans, and `elucidate()` works on adelie's own slowdowns.
+`adelie.tables`, `adelie.segments`, and `adelie.query_log` describe the store.
+
+---
+
+## 17. Explaining the data, for people and agents
+
+### 17.1 `elucidate()`
+
+Compares two populations of rows and ranks the column values that account for the difference
+in a metric.
+
+```sql
+SELECT * FROM elucidate(
+  metric   => 'approx_quantile(duration, 0.99)',
+  source   => 'otel.spans',
+  where    => 'service.name = ''api''',
+  baseline => 'start_time BETWEEN ''10:00'' AND ''11:00''',
+  target   => 'start_time BETWEEN ''11:00'' AND ''12:00''',
+  by       => 'attributes.*, resource.*'
+);
+```
+
+`target => 'duration > 2s', baseline => 'REST'` compares a selection with everything else.
+
+**How it runs:**
+
+1. **Candidates.** The profile (§17.2) drops identifiers (near-unique columns), constants, and
+   columns that are almost always absent. Usually tens of columns remain out of thousands.
+2. **One scan.** Over the two windows, reading only candidate columns, build a mergeable
+   aggregate state per (column, value) for each population: counts and sums, plus a quantile
+   sketch for percentiles. Values per column are capped with a heavy-hitters sketch and the
+   remainder is an `other` bucket, so memory is bounded. It is parallel and distributable
+   because it is the partial/final aggregation of §7.
+3. **Scoring.**
+   - Additive metrics (count, sum, error count): contribution is Δ(value) / Δ(total).
+   - Ratios (error rate, average): the change is split into **mix** (traffic moved toward the
+     value) and **rate** (the value itself got worse). Both are reported.
+   - Percentiles: which values are over-represented among target rows above the baseline's
+     percentile, scored by lift and coverage.
+4. **Noise.** A minimum support and a significance test drop thin findings (Q9). Values that
+   always co-occur are reported as one finding.
+5. **Combinations.** Only the top single findings are combined, two or three at a time, by a
+   bounded beam search.
+6. **Result.** An ordinary table: `finding`, `columns`, `values`, `contribution`, `mix`, `rate`,
+   `before`, `after`, `support`, `verify_sql`. Every row carries the SQL that reproduces it.
+
+**Limits, stated plainly.** It finds where a change is concentrated, not why. It needs enough
+rows on both sides. A change spread evenly across everything returns no dominant finding, which
+is itself an answer (often an infrastructure-wide cause).
+
+### 17.2 `profile()`: data cards
+
+`profile('otel.spans')` returns one row per column: type, presence, cardinality, a distribution
+sketch, top values, detected meaning (duration, identifier, timestamp, enum-like, URL, IP),
+candidate join keys, and drift against the previous period. It is maintained at compaction from
+stats the writer already computes, so it answers instantly. It powers `elucidate()`'s candidate
+selection and adaptive pruning (§16.2).
+
+### 17.3 `patterns()`: log templates
+
+Each log line is templated at ingest by a deterministic parse-tree algorithm (Drain-style), per
+service: `user 123 timed out after 5s` becomes `user <*> timed out after <*>`. The template's
+`pattern_id` is stored as a column. `patterns(source, where)` returns templates with counts,
+first and last seen, and an example line; a pattern first seen in a window is flagged new (Q10).
+
+### 17.4 Comparing runs
+
+`compare_runs(a, b)` is `elucidate()` with `run.id = a` and `run.id = b` as the two sides, plus
+the log patterns that appeared or vanished. It is a composition of §17.1 and §17.3, not a
+separate engine: the dev-loop question "what did my change do?" in one call.
+
+### 17.5 Findings
+
+`adelie.findings` holds findings saved by people (the UI's **Save**) and agents
+(`save_finding`): a title, the result row, the `verify_sql`, who saved it, and when. Re-running
+a finding re-checks it against current data. It is memory that people and agents share.
+
+### 17.6 One result, four renderings
+
+| Surface | Renders the result as |
+|---|---|
+| SQL / library | a table: filter it, join it, save it as a view |
+| CLI | `adelie elucidate …`, `adelie profile …`, `adelie patterns …`: a ranked table in the terminal |
+| UI | **Elucidate** on any chart or span, profiles on every table, a **Patterns** tab on logs |
+| MCP | the same rows, compacted to the caller's token budget, with truncation stated |
+
+No surface gets a feature the others lack. Token budgets and read-only defaults are MCP
+guardrails (§11), not a separate feature set.
