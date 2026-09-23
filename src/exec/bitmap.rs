@@ -57,7 +57,7 @@ impl Bitmap {
     }
 
     pub fn push(&mut self, valid: bool) {
-        if self.len % 64 == 0 {
+        if self.len.is_multiple_of(64) {
             self.words.push(0);
         }
         self.len += 1;
@@ -87,10 +87,10 @@ fn word_count(len: usize) -> usize {
 /// `new_valid` never counts padding as valid rows.
 fn mask_trailing(words: &mut [u64], len: usize) {
     let rem = len % 64;
-    if rem != 0 {
-        if let Some(last) = words.last_mut() {
-            *last &= (1u64 << rem) - 1;
-        }
+    if rem != 0
+        && let Some(last) = words.last_mut()
+    {
+        *last &= (1u64 << rem) - 1;
     }
 }
 

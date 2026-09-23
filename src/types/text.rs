@@ -123,9 +123,9 @@ fn format_timestamp(ns: i64) -> String {
 fn format_fraction(ns: u32) -> String {
     if ns == 0 {
         String::new()
-    } else if ns % 1_000_000 == 0 {
+    } else if ns.is_multiple_of(1_000_000) {
         format!(".{:03}", ns / 1_000_000)
-    } else if ns % 1_000 == 0 {
+    } else if ns.is_multiple_of(1_000) {
         format!(".{:06}", ns / 1_000)
     } else {
         format!(".{ns:09}")
