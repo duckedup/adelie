@@ -82,8 +82,8 @@ implementation detail.
 | Non-goal | Why |
 |---|---|
 | Object storage (S3, GCS) as primary storage | Local disk is the source of truth; object storage constrains the architecture |
-| A write-ahead log | A write is acknowledged only once its segment is durable (§6) |
-| Transactions, `UPDATE`, OLTP point workloads | Analytics store; writes are appends and predicate deletes |
+| A write-ahead log | A write is acknowledged only once its segment is durable (§6). The proposed `ledger` engine is the one exception (§18) |
+| Transactions, `UPDATE`, OLTP point workloads | Analytics store; writes are appends and predicate deletes. The proposed `ledger` engine is the one exception (§18) |
 | Arrow / DataFusion / Parquet in the core | Build cost; adelie owns its format and engine. Parquet import/export may ship as a feature |
 | Async compute | Operators are CPU-bound; async is for IO only (§1) |
 | A cost-based optimizer | Rule-based planning over good statistics first (§8) |
@@ -477,6 +477,9 @@ src/
 | Q9 | `elucidate()` significance: which test, and how is it corrected across many candidates? |
 | Q10 | Log patterns for multi-line logs (stack traces): one pattern per entry, or per first line? |
 | Q11 | Adaptive skip structures: what query-log evidence builds one, and what drops it (§16.2)? |
+| Q12 | Table engines (§18): where exactly is the engine trait boundary, and must it be settled before the segment format (§5) ships? |
+| Q13 | `latest`: is "newest" the commit sequence, a declared version column, or both? |
+| Q14 | `ledger`: its own crate and product, or an engine inside adelie? |
 
 ---
 
@@ -629,3 +632,61 @@ a finding re-checks it against current data. It is memory that people and agents
 
 No surface gets a feature the others lack. Token budgets and read-only defaults are MCP
 guardrails (§11), not a separate feature set.
+
+---
+
+## 18. Table engines (proposed)
+
+A table's **engine** decides its layout and what compaction does to its rows. adelie, nidus,
+and a transactional store share one core and differ only in engines. Tracked by `adelie-goi`.
+
+**The split.** Modelled on PostgreSQL's table access methods, not MySQL's storage engines.
+
+- **The core owns commits.** A commit is a manifest publish (§6). A commit records the
+  manifest version it read, and the publish fails if a conflicting commit landed since
+  (optimistic concurrency), so one commit can span several tables atomically.
+- **The core owns** snapshots, the type system and batches (§3, §7), the segment format (§5),
+  and the query layers (SQL, vector, full-text).
+- **An engine owns** its layout, its merge policy, and how a scan resolves rows that have not
+  been merged yet.
+- MySQL is the counter-example: transactions live in each engine there, so the engine API
+  shrinks to what every engine supports, and a transaction across engines needs two-phase
+  commit.
+
+**Engines.** Each is named for what it does to rows, never for its layout, so a layout can
+change without a rename.
+
+| Engine | Rows | Merge policy |
+|---|---|---|
+| `append` | every row kept | none; compaction only re-sorts and applies tombstones. The default, and adelie today |
+| `latest` | newest row per key | keeps the row with the highest commit sequence (or a declared version column) per key |
+| `rollup` | one row per key | folds mergeable aggregate states (§8); what `CREATE ROLLUP` (§16.1) is built on |
+| `vector` | every row kept | maintains a nearest-neighbour index over an embedding column (nidus) |
+| `ledger` | rows updated in place | row-oriented, with a write-ahead log; `UPDATE` and multi-statement transactions |
+
+```sql
+CREATE TABLE users (id UINT64, email STRING, seen TIMESTAMP)
+  ENGINE = latest KEY (id);
+```
+
+**Rules.**
+
+- `latest` and `rollup` resolve at read time as well as at compaction: a scan merges unmerged
+  segments by key, so a query never sees two versions of one key.
+- The key of `latest` and `rollup` is a prefix of the sort key, so a merge is a streaming pass
+  over sorted runs.
+- `ledger` is the only engine with a WAL. Its WAL is private to the engine and checkpoints into
+  ordinary segments and a manifest publish, so a reader sees one snapshot model everywhere.
+  Every other engine keeps §6's no-WAL path.
+- An engine never changes the segment format for the others. What an engine needs on disk is
+  added to §5 under the format rule (additive only).
+
+**Consequences, stated plainly.**
+
+- `ledger` reverses two non-goals in §2 (a WAL; transactions and `UPDATE`) for one engine.
+  Accepting it is a design change: a decision record first.
+- `vector` needs a fixed-length `FLOAT32` vector type, which §3 does not have yet.
+- Optimistic multi-table commits relax §6's one-writer-per-store rule only within the writer
+  process. Several writer processes remain out of scope.
+
+Open questions Q12–Q14.
