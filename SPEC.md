@@ -155,11 +155,20 @@ single-quoted with `''` escaping.
 
 **Dynamic columns and type conflicts.** Each segment stores only the columns its rows carry,
 each with one type. Across segments a column keeps the type it was first created with; a
-later value that does not fit is stored in a companion `<name>::string` column. Reading
-`<name>` when a companion exists yields STRING: the primary's canonical text if the primary
-is non-null, else the companion; the primary wins if both are set. With no companion,
-`<name>` reads as its own type. A type conflict never rejects a row and never silently
-rewrites existing data. (Open question Q2 refines this.)
+later value that does not fit is stored in a companion `<name>::string` column. A type conflict
+never rejects a row and never silently rewrites existing data.
+
+- **`<name>` always reads as its own type.** A row whose value went to the companion reads as
+  `NULL` there, so one stray value never changes the column's type or the meaning of a
+  predicate on it.
+- **The companion is explicit.** `<name>::string` is an ordinary STRING column, and
+  `coalesce_text(<name>)` reads both as one STRING: the primary's canonical text where it is
+  set, else the companion.
+- **Conflicts are surfaced, not hidden.** `profile()` (§17.2) reports each column with a
+  companion and its conflicting-row count, and a query that reads a column with a companion
+  carries a warning saying so.
+
+This answers Q2 for now; revisit it if a variant type (a per-row tagged union) lands.
 
 ---
 
@@ -467,7 +476,7 @@ src/
 | # | Question |
 |---|---|
 | Q1 | Cluster membership and shard map: static config, Raft, or an external coordinator? |
-| Q2 | Dynamic column type conflicts: is the `::string` companion column the right rule? |
+| Q2 | ~~Dynamic column type conflicts: is the `::string` companion column the right rule?~~ Answered for now (§3): the companion is kept separate and `<name>` keeps its type. Revisit with a variant type. |
 | Q3 | PostgreSQL wire protocol for BI tools: v1 or later? |
 | Q4 | UI stack: plain JS with no build step, or a prebuilt bundle? |
 | Q5 | Deduplication of retried writes for general tables: idempotency keys, or none? |
