@@ -31,7 +31,10 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
             continue;
         }
         let path = Manifest::segment_path(&shared.root, &g.table, &g.segment);
-        shared.io.remove(&path).map_err(|source| io_err(&path, source))?;
+        shared
+            .io
+            .remove(&path)
+            .map_err(|source| io_err(&path, source))?;
         removed_ids.push(g.segment.id);
     }
 
@@ -50,7 +53,11 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
 
 /// Removes any `<id>.seg` file under `root` that names neither a live nor a garbage segment
 /// (SPEC §18): it was never published, or was GC'd after its grace already elapsed.
-pub(crate) fn cleanup_orphans(root: &Path, manifest: &Manifest, io: &crate::io::Io) -> Result<(), Error> {
+pub(crate) fn cleanup_orphans(
+    root: &Path,
+    manifest: &Manifest,
+    io: &crate::io::Io,
+) -> Result<(), Error> {
     let mut keep: HashSet<u64> = HashSet::new();
     for t in &manifest.tables {
         keep.extend(t.segments.iter().map(|s| s.id));
@@ -102,7 +109,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-store-gc-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-store-gc-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     fn schema() -> Vec<Field> {
@@ -137,14 +147,28 @@ mod tests {
         store.write(&table, batch(2)).unwrap();
 
         let view = store.snapshot();
-        let old_ids: Vec<u64> = view.table(&table).unwrap().segments.iter().map(|s| s.id).collect();
+        let old_ids: Vec<u64> = view
+            .table(&table)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.id)
+            .collect();
         let paths: Vec<PathBuf> = old_ids
             .iter()
-            .map(|id| dir.join("d").join("t").join("_").join(format!("{id:016x}.seg")))
+            .map(|id| {
+                dir.join("d")
+                    .join("t")
+                    .join("_")
+                    .join(format!("{id:016x}.seg"))
+            })
             .collect();
 
         store.compact(&table).unwrap().unwrap();
-        assert!(paths.iter().all(|p| p.exists()), "compact must not delete while a Snapshot lives");
+        assert!(
+            paths.iter().all(|p| p.exists()),
+            "compact must not delete while a Snapshot lives"
+        );
 
         drop(view);
         let removed = store.gc().unwrap();

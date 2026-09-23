@@ -138,7 +138,12 @@ fn distinct_partitions(segments: &[SegmentEntry]) -> Vec<String> {
 
 /// Walks one partition's live segments in seq order, closing the current run whenever a
 /// segment is too big, a tombstone would straddle it, or the run hits the 32-input cap.
-fn plan_partition(table: &TableEntry, partition: &str, opts: &StoreOptions, plans: &mut Vec<MergePlan>) {
+fn plan_partition(
+    table: &TableEntry,
+    partition: &str,
+    opts: &StoreOptions,
+    plans: &mut Vec<MergePlan>,
+) {
     const MAX_INPUTS: usize = 32;
     let mut run: Vec<u64> = Vec::new();
     let mut run_min_seq = 0u64;
@@ -237,9 +242,13 @@ mod tests {
 
     #[test]
     fn flush_never_splits_a_batch_and_starts_a_new_segment_past_max_rows() {
-        let batches: Vec<Arc<Batch>> = vec![Arc::new(batch(3)), Arc::new(batch(3)), Arc::new(batch(3))];
+        let batches: Vec<Arc<Batch>> =
+            vec![Arc::new(batch(3)), Arc::new(batch(3)), Arc::new(batch(3))];
         let out = Append.flush(&[field()], &batches, 5).unwrap();
-        let rows_per_seg: Vec<usize> = out.iter().map(|s| s.iter().map(Batch::rows).sum()).collect();
+        let rows_per_seg: Vec<usize> = out
+            .iter()
+            .map(|s| s.iter().map(Batch::rows).sum())
+            .collect();
         assert_eq!(rows_per_seg, vec![3, 3, 3]);
         assert_eq!(out, vec![vec![batch(3)], vec![batch(3)], vec![batch(3)]]);
     }
@@ -280,7 +289,13 @@ mod tests {
     #[test]
     fn plan_merge_never_straddles_a_tombstone() {
         let t = table(
-            vec![seg(1, 1, 1), seg(2, 2, 1), seg(3, 3, 1), seg(5, 5, 1), seg(6, 6, 1)],
+            vec![
+                seg(1, 1, 1),
+                seg(2, 2, 1),
+                seg(3, 3, 1),
+                seg(5, 5, 1),
+                seg(6, 6, 1),
+            ],
             vec![Tombstone {
                 seq: 4,
                 predicates: vec![Predicate {
@@ -299,7 +314,10 @@ mod tests {
         for plan in &plans {
             let min = *plan.inputs.iter().min().unwrap();
             let max = *plan.inputs.iter().max().unwrap();
-            assert!(!(min < 4 && 4 <= max), "plan {plan:?} straddles the tombstone");
+            assert!(
+                !(min < 4 && 4 <= max),
+                "plan {plan:?} straddles the tombstone"
+            );
         }
         assert_eq!(plans.len(), 2);
     }

@@ -2,7 +2,7 @@
 //! since 1.89). No dependency, no unsafe.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::Error;
 
@@ -21,6 +21,7 @@ pub(crate) fn acquire(dir: &Path) -> Result<File, Error> {
 fn open(path: &Path) -> Result<File, Error> {
     OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(path)
         .map_err(|source| super::io_err(path, source))
@@ -29,13 +30,17 @@ fn open(path: &Path) -> Result<File, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-store-lock-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-store-lock-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     #[test]

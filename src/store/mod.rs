@@ -140,6 +140,7 @@ impl Store {
     }
 
     /// Same as `open`, with a caller-supplied `Io` (tests: `Io::recording()`).
+    #[cfg(test)]
     pub(crate) fn open_with_io(
         dir: impl AsRef<Path>,
         opts: StoreOptions,
@@ -197,7 +198,12 @@ impl Store {
         })
     }
 
-    pub fn create_table(&self, name: &TableName, engine: &str, schema: Vec<Field>) -> Result<(), Error> {
+    pub fn create_table(
+        &self,
+        name: &TableName,
+        engine: &str,
+        schema: Vec<Field>,
+    ) -> Result<(), Error> {
         if engine_by_name(engine).is_none() {
             return Err(Error::Manifest(manifest::Error::UnknownEngine {
                 table: name.to_string(),
@@ -206,8 +212,16 @@ impl Store {
         }
         let name = name.clone();
         let engine = engine.to_string();
-        self.shared
-            .commit(move |_v| vec![Edit::CreateTable { name, engine, schema }], &[])?;
+        self.shared.commit(
+            move |_v| {
+                vec![Edit::CreateTable {
+                    name,
+                    engine,
+                    schema,
+                }]
+            },
+            &[],
+        )?;
         Ok(())
     }
 
@@ -242,7 +256,11 @@ impl Store {
             for (table, batch) in writes {
                 state.pending_rows += batch.rows();
                 state.pending_bytes += batch.byte_size();
-                state.pending.entry(table).or_default().push(Arc::new(batch));
+                state
+                    .pending
+                    .entry(table)
+                    .or_default()
+                    .push(Arc::new(batch));
             }
             let should = should_flush(
                 state.pending_rows,
@@ -293,8 +311,10 @@ impl Store {
     pub fn delete(&self, table: &TableName, predicates: Vec<Predicate>) -> Result<u64, Error> {
         self.flush()?;
         let table = table.clone();
-        self.shared
-            .commit(move |_v| vec![Edit::AddTombstone { table, predicates }], &[])
+        self.shared.commit(
+            move |_v| vec![Edit::AddTombstone { table, predicates }],
+            &[],
+        )
     }
 
     /// Merges every plan the table's engine proposes into one commit. `None` if it proposed
@@ -321,7 +341,10 @@ impl Store {
         let current = state.current.clone();
         let mut buffered: BTreeMap<TableName, Vec<Arc<Batch>>> = BTreeMap::new();
         for (t, v) in state.in_flight.iter().chain(state.pending.iter()) {
-            buffered.entry(t.clone()).or_default().extend(v.iter().cloned());
+            buffered
+                .entry(t.clone())
+                .or_default()
+                .extend(v.iter().cloned());
         }
         // Registered before `state` is released, so a gc that reads `current` after us also sees
         // us in `live`. Lock order is state, then live; gc never holds live while taking state.
@@ -364,7 +387,11 @@ impl Drop for Store {
 /// The first field where `batch` and `schema` differ, or a length mismatch.
 fn describe_mismatch(batch_fields: &[Field], schema: &[Field]) -> String {
     if batch_fields.len() != schema.len() {
-        return format!("expected {} fields, got {}", schema.len(), batch_fields.len());
+        return format!(
+            "expected {} fields, got {}",
+            schema.len(),
+            batch_fields.len()
+        );
     }
     for (i, (b, s)) in batch_fields.iter().zip(schema).enumerate() {
         if b != s {
@@ -509,7 +536,10 @@ mod tests {
     fn wait_until_buffered(store: &Store) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while store.snapshot().buffered(&table()).is_empty() {
-            assert!(std::time::Instant::now() < deadline, "write never reached the buffer");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "write never reached the buffer"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -593,7 +623,13 @@ mod tests {
             .iter()
             .find(|s| s.seq == later_version)
             .unwrap();
-        assert!(view2.table(&table()).unwrap().tombstones_for(later_seg).is_empty());
+        assert!(
+            view2
+                .table(&table())
+                .unwrap()
+                .tombstones_for(later_seg)
+                .is_empty()
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -612,9 +648,13 @@ mod tests {
         }
         .apply(&crate::manifest::Manifest::empty(), 0)
         .unwrap();
-        Publisher::new(dir.clone(), Io::real(), 8).publish(&m).unwrap();
+        Publisher::new(dir.clone(), Io::real(), 8)
+            .publish(&m)
+            .unwrap();
 
-        let err = Store::open(&dir, StoreOptions::default()).err().expect("open must fail");
+        let err = Store::open(&dir, StoreOptions::default())
+            .err()
+            .expect("open must fail");
         assert!(
             matches!(&err, Error::Manifest(manifest::Error::UnknownEngine { engine, .. }) if engine == "nope"),
             "{err}"
@@ -641,7 +681,11 @@ mod tests {
             let store = open(&dir, StoreOptions::default());
             store.write(&table(), batch(0, 1)).unwrap();
         }
-        let orphan = dir.join("d").join("t").join("_").join("ffffffffffffff00.seg");
+        let orphan = dir
+            .join("d")
+            .join("t")
+            .join("_")
+            .join("ffffffffffffff00.seg");
         std::fs::write(&orphan, b"junk").unwrap();
 
         let store = Store::open(&dir, StoreOptions::default()).unwrap();

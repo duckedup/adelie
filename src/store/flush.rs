@@ -16,6 +16,9 @@ use super::buffer::{FlushTicket, should_flush};
 use super::engine::engine_by_name;
 use super::{Error, Shared, io_err};
 
+/// Buffered batches per table, in arrival order.
+type Buffered = BTreeMap<TableName, Vec<Arc<Batch>>>;
+
 pub(crate) fn spawn(shared: Arc<Shared>) -> JoinHandle<()> {
     std::thread::spawn(move || loop_forever(&shared))
 }
@@ -43,7 +46,7 @@ fn loop_forever(shared: &Arc<Shared>) {
 
 /// Blocks until a flush is due and `pending` is non-empty, then takes `pending` into
 /// `in_flight` and hands back a copy plus the ticket it must resolve. `None` means: close.
-fn wait_for_work(shared: &Arc<Shared>) -> Option<(BTreeMap<TableName, Vec<Arc<Batch>>>, Arc<FlushTicket>)> {
+fn wait_for_work(shared: &Arc<Shared>) -> Option<(Buffered, Arc<FlushTicket>)> {
     let mut state = shared.state.lock().unwrap();
     loop {
         let elapsed = state.first_pending.map(|t| t.elapsed());
@@ -85,7 +88,10 @@ fn wait_for_work(shared: &Arc<Shared>) -> Option<(BTreeMap<TableName, Vec<Arc<Ba
 /// One flush, in the exact order criterion 1 checks:
 /// per table, encode a segment per engine output; write + sync each; sync each distinct
 /// partition dir; commit `AddSegments` (seq = the new version); ack.
-pub(crate) fn run(shared: &Arc<Shared>, in_flight: &BTreeMap<TableName, Vec<Arc<Batch>>>) -> Result<u64, Error> {
+pub(crate) fn run(
+    shared: &Arc<Shared>,
+    in_flight: &BTreeMap<TableName, Vec<Arc<Batch>>>,
+) -> Result<u64, Error> {
     let manifest = shared.state.lock().unwrap().current.manifest().clone();
     let mut written: Vec<(TableName, Vec<SegmentEntry>)> = Vec::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -152,7 +158,10 @@ pub(crate) fn run(shared: &Arc<Shared>, in_flight: &BTreeMap<TableName, Vec<Arc<
     }
 
     for dir in &dirs {
-        shared.io.sync_dir(dir).map_err(|source| io_err(dir, source))?;
+        shared
+            .io
+            .sync_dir(dir)
+            .map_err(|source| io_err(dir, source))?;
     }
 
     crate::fail::point("flush.pre_publish");
@@ -191,7 +200,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-store-flush-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-store-flush-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     fn schema() -> Vec<Field> {
@@ -203,7 +215,11 @@ mod tests {
 
     fn batch(n: u64) -> Batch {
         let v: Vec<Value> = (0..n).map(Value::UInt64).collect();
-        Batch::new(schema(), vec![Column::from_values(&DataType::UInt64, &v).unwrap()]).unwrap()
+        Batch::new(
+            schema(),
+            vec![Column::from_values(&DataType::UInt64, &v).unwrap()],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -220,7 +236,11 @@ mod tests {
         store.write(&table, batch(1)).unwrap();
 
         // Segment ids start at 0 (a fresh manifest's `next_segment_id`).
-        let seg_path = dir.join("d").join("t").join("_").join("0000000000000000.seg");
+        let seg_path = dir
+            .join("d")
+            .join("t")
+            .join("_")
+            .join("0000000000000000.seg");
         let root_manifest = dir.join("manifest");
         let root_tmp = dir.join("manifest.tmp");
 
@@ -228,7 +248,10 @@ mod tests {
         // clear the log so the second flush's order can be checked in isolation.
         let first_log = log.lock().unwrap().clone();
         assert!(matches!(first_log[0], Op::CreateDir(_)));
-        let write_pos = first_log.iter().position(|op| matches!(op, Op::Write(p) if p == &seg_path)).unwrap();
+        let write_pos = first_log
+            .iter()
+            .position(|op| matches!(op, Op::Write(p) if p == &seg_path))
+            .unwrap();
         assert!(
             first_log[..write_pos]
                 .iter()
@@ -238,7 +261,11 @@ mod tests {
 
         store.write(&table, batch(1)).unwrap();
         let second_log = log.lock().unwrap().clone();
-        let seg_path2 = dir.join("d").join("t").join("_").join("0000000000000001.seg");
+        let seg_path2 = dir
+            .join("d")
+            .join("t")
+            .join("_")
+            .join("0000000000000001.seg");
         let part_dir = dir.join("d").join("t").join("_");
         let version = store.snapshot().version();
         assert_eq!(

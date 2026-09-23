@@ -8,12 +8,30 @@ use std::path::PathBuf;
 /// defined here because the manifest is where the engine name lives.
 #[derive(Debug)]
 pub enum Error {
-    Io { path: PathBuf, source: std::io::Error },
-    Corrupt { path: String, detail: String },
-    UnsupportedVersion { path: String, version: u16 },
-    UnknownEngine { table: String, engine: String },
-    UnknownSideFile { path: String, kind: u64 },
-    Conflict { table: String, detail: String },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Corrupt {
+        path: String,
+        detail: String,
+    },
+    UnsupportedVersion {
+        path: String,
+        version: u16,
+    },
+    UnknownEngine {
+        table: String,
+        engine: String,
+    },
+    UnknownSideFile {
+        path: String,
+        kind: u64,
+    },
+    Conflict {
+        table: String,
+        detail: String,
+    },
     Usage(String),
 }
 

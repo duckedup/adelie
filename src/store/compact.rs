@@ -89,7 +89,11 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         }
         let outputs = engine.merge(&entry.schema, inputs, shared.opts.max_rows)?;
 
-        let partition_dir = shared.root.join(&table.db).join(&table.name).join(&plan.partition);
+        let partition_dir = shared
+            .root
+            .join(&table.db)
+            .join(&table.name)
+            .join(&plan.partition);
         shared
             .io
             .create_dir_all(&partition_dir)

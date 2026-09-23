@@ -69,7 +69,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-store-read-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-store-read-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     fn schema() -> Vec<Field> {
@@ -81,7 +84,11 @@ mod tests {
 
     fn batch(vals: &[i64]) -> Batch {
         let v: Vec<Value> = vals.iter().copied().map(Value::Int64).collect();
-        Batch::new(schema(), vec![Column::from_values(&DataType::Int64, &v).unwrap()]).unwrap()
+        Batch::new(
+            schema(),
+            vec![Column::from_values(&DataType::Int64, &v).unwrap()],
+        )
+        .unwrap()
     }
 
     #[test]

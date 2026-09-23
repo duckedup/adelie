@@ -210,7 +210,11 @@ fn encode_segments(segments: &[SegmentEntry], schema: &[Field], out: &mut Sink) 
     }
 }
 
-fn decode_segments(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Vec<SegmentEntry>, Error> {
+fn decode_segments(
+    cur: &mut Cursor,
+    schema: &[Field],
+    path: &str,
+) -> Result<Vec<SegmentEntry>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let n = body.uvarint().map_err(|e| corrupt(path, e))?;
     let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
@@ -258,7 +262,11 @@ fn decode_segment(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Segm
 // ── columns (segment-wide ColumnStats, one per schema field) ───────────────
 
 fn encode_columns(columns: &[ColumnStats], schema: &[Field], out: &mut Sink) {
-    debug_assert_eq!(columns.len(), schema.len(), "segment columns must match schema arity");
+    debug_assert_eq!(
+        columns.len(),
+        schema.len(),
+        "segment columns must match schema arity"
+    );
     out.uvarint(columns.len() as u64);
     for (c, field) in columns.iter().zip(schema) {
         out.record(|r| {
@@ -276,14 +284,21 @@ fn encode_columns(columns: &[ColumnStats], schema: &[Field], out: &mut Sink) {
     }
 }
 
-fn decode_columns(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Vec<ColumnStats>, Error> {
+fn decode_columns(
+    cur: &mut Cursor,
+    schema: &[Field],
+    path: &str,
+) -> Result<Vec<ColumnStats>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let n = body.uvarint().map_err(|e| corrupt(path, e))?;
     let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
     if n != schema.len() {
         return Err(corrupt_str(
             path,
-            &format!("segment has {n} column stats, schema has {} fields", schema.len()),
+            &format!(
+                "segment has {n} column stats, schema has {} fields",
+                schema.len()
+            ),
         ));
     }
     let mut out = Vec::with_capacity(n);
@@ -340,7 +355,11 @@ fn encode_tombstones(tombstones: &[Tombstone], schema: &[Field], out: &mut Sink)
     }
 }
 
-fn decode_tombstones(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Vec<Tombstone>, Error> {
+fn decode_tombstones(
+    cur: &mut Cursor,
+    schema: &[Field],
+    path: &str,
+) -> Result<Vec<Tombstone>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let n = body.uvarint().map_err(|e| corrupt(path, e))?;
     let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
@@ -376,7 +395,11 @@ fn encode_predicate(p: &Predicate, schema: &[Field], out: &mut Sink) {
     out.u8(cmp_op_id(p.op));
     // Validated against `schema` at `Commit::apply` time: every live predicate names a real
     // column, so this always finds one.
-    let ty = &schema.iter().find(|f| f.name == p.column).expect("predicate column in schema").ty;
+    let ty = &schema
+        .iter()
+        .find(|f| f.name == p.column)
+        .expect("predicate column in schema")
+        .ty;
     value::encode_value(&p.value, ty, out);
 }
 
@@ -386,10 +409,12 @@ fn decode_predicate(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Pr
     let op_byte = body.u8().map_err(|e| corrupt(path, e))?;
     let op = cmp_op_from_id(op_byte)
         .ok_or_else(|| corrupt_str(path, &format!("unknown comparison op {op_byte}")))?;
-    let field = schema
-        .iter()
-        .find(|f| f.name == column)
-        .ok_or_else(|| corrupt_str(path, &format!("tombstone predicate names unknown column {column}")))?;
+    let field = schema.iter().find(|f| f.name == column).ok_or_else(|| {
+        corrupt_str(
+            path,
+            &format!("tombstone predicate names unknown column {column}"),
+        )
+    })?;
     let value = value::decode_value(&mut body, &field.ty).map_err(|e| corrupt(path, e))?;
     Ok(Predicate { column, op, value })
 }
@@ -485,7 +510,12 @@ pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
 /// Test-only: like `encode_segments`, but appends an unknown trailing `uvarint 99` to the
 /// first segment's record — the additive-fields case a reader must skip past.
 #[cfg(test)]
-fn encode_segments_with_extra(segments: &[SegmentEntry], schema: &[Field], out: &mut Sink, add_extra: bool) {
+fn encode_segments_with_extra(
+    segments: &[SegmentEntry],
+    schema: &[Field],
+    out: &mut Sink,
+    add_extra: bool,
+) {
     out.uvarint(segments.len() as u64);
     for (j, s) in segments.iter().enumerate() {
         out.record(|r| {

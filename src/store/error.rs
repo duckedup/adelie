@@ -11,11 +11,21 @@ use crate::{manifest, segment};
 pub enum Error {
     Manifest(manifest::Error),
     Segment(segment::Error),
-    Io { path: PathBuf, source: std::io::Error },
-    Locked { path: PathBuf },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Locked {
+        path: PathBuf,
+    },
     UnknownTable(String),
-    SchemaMismatch { table: String, detail: String },
-    SnapshotExpired { segment: String },
+    SchemaMismatch {
+        table: String,
+        detail: String,
+    },
+    SnapshotExpired {
+        segment: String,
+    },
     Closed,
     Flush(String),
     Usage(String),

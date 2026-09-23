@@ -5,7 +5,9 @@ use crate::exec::Field;
 use crate::types::{DataType, Value, coerce};
 
 use super::error::Error;
-use super::{CmpOp, Garbage, Manifest, is_path_component, Predicate, SegmentEntry, TableEntry, TableName, Tombstone};
+use super::{
+    Garbage, Manifest, Predicate, SegmentEntry, TableEntry, TableName, Tombstone, is_path_component,
+};
 
 /// One change to a `Manifest`. `Commit::apply` applies a list of these in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -120,7 +122,11 @@ fn create_table(
     Ok(())
 }
 
-fn add_segments(m: &mut Manifest, table: &TableName, segments: &[SegmentEntry]) -> Result<(), Error> {
+fn add_segments(
+    m: &mut Manifest,
+    table: &TableName,
+    segments: &[SegmentEntry],
+) -> Result<(), Error> {
     let idx = table_index(m, table)?;
     let schema_len = m.tables[idx].schema.len();
     for s in segments {
@@ -178,7 +184,11 @@ fn remove_segments(
     Ok(())
 }
 
-fn add_tombstone(m: &mut Manifest, table: &TableName, predicates: &[Predicate]) -> Result<(), Error> {
+fn add_tombstone(
+    m: &mut Manifest,
+    table: &TableName,
+    predicates: &[Predicate],
+) -> Result<(), Error> {
     let idx = table_index(m, table)?;
     let schema = &m.tables[idx].schema;
     let mut stored = Vec::with_capacity(predicates.len());
@@ -244,6 +254,7 @@ fn reserve_segment_ids(m: &mut Manifest, next: u64) {
 mod tests {
     use super::*;
     use crate::exec::ColumnStats;
+    use crate::manifest::CmpOp;
     use crate::types::Decimal;
 
     fn schema() -> Vec<Field> {
@@ -288,7 +299,14 @@ mod tests {
 
     #[test]
     fn a_table_name_that_could_escape_the_store_root_is_usage() {
-        for (db, name) in [("..", "t"), ("d", ".."), ("d", "a/b"), ("", "t"), ("d", "."), ("/abs", "t")] {
+        for (db, name) in [
+            ("..", "t"),
+            ("d", ".."),
+            ("d", "a/b"),
+            ("", "t"),
+            ("d", "."),
+            ("/abs", "t"),
+        ] {
             let commit = Commit {
                 base: 0,
                 edits: vec![Edit::CreateTable {
@@ -297,7 +315,10 @@ mod tests {
                     schema: schema(),
                 }],
             };
-            assert!(matches!(commit.apply(&Manifest::empty(), 0), Err(Error::Usage(_))), "{db:?}.{name:?}");
+            assert!(
+                matches!(commit.apply(&Manifest::empty(), 0), Err(Error::Usage(_))),
+                "{db:?}.{name:?}"
+            );
         }
     }
 
@@ -312,10 +333,7 @@ mod tests {
                 schema: schema(),
             }],
         };
-        assert!(matches!(
-            commit.apply(&m, 0),
-            Err(Error::Conflict { .. })
-        ));
+        assert!(matches!(commit.apply(&m, 0), Err(Error::Conflict { .. })));
     }
 
     #[test]
@@ -330,7 +348,13 @@ mod tests {
         };
         let next = commit.apply(&m, 0).unwrap();
         assert_eq!(next.version, m.version + 1);
-        assert_eq!(next.table(&TableName::new("d", "t")).unwrap().segments.len(), 1);
+        assert_eq!(
+            next.table(&TableName::new("d", "t"))
+                .unwrap()
+                .segments
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -415,7 +439,12 @@ mod tests {
         .apply(&m, 4242)
         .unwrap();
 
-        assert!(next.table(&TableName::new("d", "t")).unwrap().segments.is_empty());
+        assert!(
+            next.table(&TableName::new("d", "t"))
+                .unwrap()
+                .segments
+                .is_empty()
+        );
         assert_eq!(next.garbage.len(), 1);
         assert_eq!(next.garbage[0].removed_at_ms, 4242);
         assert!(next.garbage[0].segment.columns.is_empty());
@@ -518,16 +547,29 @@ mod tests {
     #[test]
     fn a_decimal_tombstone_is_rescaled_to_the_column_and_survives_a_reload() {
         // 10.5 at scale 1 into DECIMAL(10, 2): stored as 10.50, not read back as 1.05.
-        let m = delete_price(&decimal_table(10, 2), Value::Decimal(Decimal::new(105, 1).unwrap())).unwrap();
+        let m = delete_price(
+            &decimal_table(10, 2),
+            Value::Decimal(Decimal::new(105, 1).unwrap()),
+        )
+        .unwrap();
         let reloaded = Manifest::decode("manifest", &m.encode()).unwrap();
-        let t = &reloaded.table(&TableName::new("d", "p")).unwrap().tombstones[0];
-        assert_eq!(t.predicates[0].value, Value::Decimal(Decimal::new(1050, 2).unwrap()));
+        let t = &reloaded
+            .table(&TableName::new("d", "p"))
+            .unwrap()
+            .tombstones[0];
+        assert_eq!(
+            t.predicates[0].value,
+            Value::Decimal(Decimal::new(1050, 2).unwrap())
+        );
     }
 
     #[test]
     fn a_decimal_tombstone_beyond_the_column_precision_is_usage() {
         // 1234567.89 cannot fit DECIMAL(3, 2); committing it would leave an undecodable manifest.
-        let r = delete_price(&decimal_table(3, 2), Value::Decimal(Decimal::new(123_456_789, 2).unwrap()));
+        let r = delete_price(
+            &decimal_table(3, 2),
+            Value::Decimal(Decimal::new(123_456_789, 2).unwrap()),
+        );
         assert!(matches!(r, Err(Error::Usage(_))), "{r:?}");
     }
 

@@ -67,7 +67,13 @@ mod tests {
 
     #[test]
     fn none_of_the_triggers_is_false() {
-        assert!(!should_flush(1, 1, Some(Duration::from_millis(1)), &opts(), false));
+        assert!(!should_flush(
+            1,
+            1,
+            Some(Duration::from_millis(1)),
+            &opts(),
+            false
+        ));
     }
 
     #[test]
@@ -84,8 +90,20 @@ mod tests {
 
     #[test]
     fn the_interval_triggers() {
-        assert!(should_flush(1, 1, Some(Duration::from_millis(250)), &opts(), false));
-        assert!(!should_flush(1, 1, Some(Duration::from_millis(249)), &opts(), false));
+        assert!(should_flush(
+            1,
+            1,
+            Some(Duration::from_millis(250)),
+            &opts(),
+            false
+        ));
+        assert!(!should_flush(
+            1,
+            1,
+            Some(Duration::from_millis(249)),
+            &opts(),
+            false
+        ));
         assert!(!should_flush(1, 1, None, &opts(), false));
     }
 

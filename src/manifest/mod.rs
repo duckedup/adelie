@@ -119,10 +119,7 @@ pub struct TableEntry {
 impl TableEntry {
     /// Tombstones with `t.seq > seg.seq`: the scan-resolution contract E5 consumes.
     pub fn tombstones_for(&self, seg: &SegmentEntry) -> Vec<&Tombstone> {
-        self.tombstones
-            .iter()
-            .filter(|t| t.seq > seg.seq)
-            .collect()
+        self.tombstones.iter().filter(|t| t.seq > seg.seq).collect()
     }
 }
 

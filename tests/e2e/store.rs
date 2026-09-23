@@ -43,7 +43,10 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("adelie-e2e-store-{tag}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "adelie-e2e-store-{tag}-{}-{nanos}",
+        std::process::id()
+    ))
 }
 
 fn to_io(e: Error) -> io::Error {
@@ -53,7 +56,10 @@ fn to_io(e: Error) -> io::Error {
 /// Builds one `Batch { batch: UInt64, idx: UInt64 }` from a crash-harness row slice.
 fn row_batch(rows: &[Row]) -> Batch {
     let batch_col: Vec<Value> = rows.iter().map(|&(b, _)| Value::UInt64(b)).collect();
-    let idx_col: Vec<Value> = rows.iter().map(|&(_, i)| Value::UInt64(u64::from(i))).collect();
+    let idx_col: Vec<Value> = rows
+        .iter()
+        .map(|&(_, i)| Value::UInt64(u64::from(i)))
+        .collect();
     Batch::new(
         schema(),
         vec![
@@ -314,7 +320,10 @@ fn multi_table_is_atomic() {
     };
     let summary = run::<PairTarget>(concat!(module_path!(), "::multi_table_is_atomic"), &plan)
         .expect("a multi-table commit must be atomic across this kill");
-    assert!(summary.killed > 0, "manifest.pre_rename was never hit in 8 runs");
+    assert!(
+        summary.killed > 0,
+        "manifest.pre_rename was never hit in 8 runs"
+    );
 }
 
 // ── Criterion 5: one writer per store; a reader is always welcome ──────────
@@ -364,11 +373,20 @@ fn buffer_is_queryable_but_not_durable() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let seen = store.snapshot().scan(&table()).unwrap().iter().map(Batch::rows).sum::<usize>();
+        let seen = store
+            .snapshot()
+            .scan(&table())
+            .unwrap()
+            .iter()
+            .map(Batch::rows)
+            .sum::<usize>();
         if seen == 16 {
             break;
         }
-        assert!(Instant::now() < deadline, "buffered rows never became visible");
+        assert!(
+            Instant::now() < deadline,
+            "buffered rows never became visible"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 
@@ -389,7 +407,12 @@ fn buffer_is_queryable_but_not_durable() {
 
     let reader_view = Reader::open(&dir).unwrap().snapshot().unwrap();
     assert!(reader_view.version() >= write_version);
-    let rows_after: usize = reader_view.scan(&table()).unwrap().iter().map(Batch::rows).sum();
+    let rows_after: usize = reader_view
+        .scan(&table())
+        .unwrap()
+        .iter()
+        .map(Batch::rows)
+        .sum();
     assert_eq!(rows_after, 16);
 
     drop(store);
@@ -414,7 +437,9 @@ fn durable_round_trip() {
 
     let store = Store::open(&dir, opts()).unwrap();
     let got = flatten(&store.snapshot().scan(&table()).unwrap());
-    let want: Vec<Row> = (0..5u64).flat_map(|b| (0..16u32).map(move |i| (b, i))).collect();
+    let want: Vec<Row> = (0..5u64)
+        .flat_map(|b| (0..16u32).map(move |i| (b, i)))
+        .collect();
     assert_eq!(got, want);
 
     drop(store);
@@ -451,18 +476,31 @@ fn compaction_is_safe_for_live_readers() {
 
     let mut old_rows = flatten(&old.scan(&table()).unwrap());
     old_rows.sort();
-    let mut want_old: Vec<Row> = (0..4u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want_old: Vec<Row> = (0..4u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want_old.sort();
-    assert_eq!(old_rows, want_old, "a live Snapshot must still see its rows after compaction");
+    assert_eq!(
+        old_rows, want_old,
+        "a live Snapshot must still see its rows after compaction"
+    );
 
     let mut all_rows = flatten(&store.snapshot().scan(&table()).unwrap());
     all_rows.sort();
-    let mut want_all: Vec<Row> = (0..5u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want_all: Vec<Row> = (0..5u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want_all.sort();
-    assert_eq!(all_rows, want_all, "every batch's rows must appear exactly once");
+    assert_eq!(
+        all_rows, want_all,
+        "every batch's rows must appear exactly once"
+    );
 
     drop(old);
-    assert!(store.gc().unwrap() >= 1, "dropping the live snapshot must free the compacted files");
+    assert!(
+        store.gc().unwrap() >= 1,
+        "dropping the live snapshot must free the compacted files"
+    );
 
     drop(store);
     std::fs::remove_dir_all(&dir).unwrap();

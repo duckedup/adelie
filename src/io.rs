@@ -34,6 +34,7 @@ impl Io {
     }
 
     /// A recording `Io`, plus the shared log it appends to.
+    #[cfg(test)]
     pub(crate) fn recording() -> (Io, Arc<Mutex<Vec<Op>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
         (

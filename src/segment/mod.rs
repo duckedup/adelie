@@ -14,8 +14,8 @@ pub(crate) mod wire;
 mod writer;
 
 pub use encode::Encoding;
-pub use error::Error;
 pub(crate) use error::DecodeError;
+pub use error::Error;
 pub use idx::{IdxReader, IdxWriter};
 pub use index::{IndexKind, SkipIndex};
 pub use reader::{ChunkMeta, IndexEntry, Reader, RowGroupMeta};
