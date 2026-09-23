@@ -1,0 +1,21 @@
+[package]
+name = "adelie"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A pure-Rust columnar analytics store with SQL."
+repository = "https://github.com/duckedup/adelie"
+license = "MIT"
+publish = false
+exclude = [".agents/", ".beads/", ".claude/", ".codex/", ".cursor/", ".github/", "AGENTS.md", "decisions/", "justfile", "scripts/"]
+
+[lib]
+name = "adelie"
+path = "src/lib.rs"
+
+[features]
+# Empty until the first feature lands. `--no-default-features` is the lean library build
+# and is what `just test`/`just ci` run; CI's build budget times it clean (D0004).
+default = []
+
+[dependencies]

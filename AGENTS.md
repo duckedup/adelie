@@ -40,6 +40,22 @@ the files a fresh clone needs to find the database (`.beads/config.yaml`,
 - **Never track `.beads/issues.jsonl`** (D0001). The shared state is the Dolt ref.
 - **Close the ticket yourself when the PR merges.** Nothing auto-closes a bead.
 
+## Build & test
+
+```bash
+just ci        # fmt-check + clippy (-D warnings) + test, lean library build
+just test      # tests, lean library build (--no-default-features)
+just lint      # clippy only        just fmt   # format
+just miri      # UB check (nightly)
+```
+
+Rust 1.98, pinned in `rust-toolchain.toml`. Edition 2024. `#![deny(unsafe_code)]`.
+
+- **Build budget:** the lean clean build stays under 60s, CI-enforced. A dependency that
+  blows it, or any bundled-C crate, is a design change: issue first (D0004).
+- **CI:** a required check's workflow lists `merge_group:` (D0003).
+- Commit style: emoji prefix + short description (e.g. `🐧 segment codec`).
+
 ## Session completion
 
 Work is not complete until both pushes succeed:

@@ -1,0 +1,146 @@
+name: CI
+
+# merge_group is not optional once a merge queue is on: a queued PR builds on a temporary
+# gh-readonly-queue ref, and a required check that does not run there never reports (D0003).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI builds clean each run; incremental artifacts only bloat the cache.
+  CARGO_INCREMENTAL: "0"
+
+# The toolchain is pinned by rust-toolchain.toml; `dtolnay/rust-toolchain@stable` only
+# bootstraps rustup, and the pin wins. Miri alone runs on nightly.
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # The build budget (D0004): a clean, uncached, offline build of the lean library build.
+  # Deps are fetched first so network time is not counted. The 60s bound is order-of-
+  # magnitude on purpose: loose enough for a shared runner, tight enough that a bundled-C
+  # tree cannot pass.
+  build-budget:
+    name: build-budget (clean-build timer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch dependencies (network time is not compile time)
+        run: cargo fetch
+      - name: Time a clean offline build of the lean library build
+        run: |
+          start=$(date +%s)
+          cargo build --offline --no-default-features
+          elapsed=$(( $(date +%s) - start ))
+          echo "clean build: ${elapsed}s (budget: 60s, D0004)"
+          if [ "$elapsed" -gt 60 ]; then
+            echo "::error::clean build took ${elapsed}s, over the 60s budget (D0004). A new dependency likely blew the build budget; that is a design change, not an implementation detail."
+            exit 1
+          fi
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+      - name: lean library build (--no-default-features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - name: default build
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+      - name: lean library build (--no-default-features)
+        run: cargo test --no-default-features
+      - name: default build
+        if: ${{ !cancelled() }}
+        run: cargo test
+
+  release:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+      - run: cargo build --release --no-default-features
+
+  # Undefined-behaviour check over the lean library build. A test Miri cannot run (fsync,
+  # unsupported syscalls) carries `#[cfg_attr(miri, ignore)]` with its reason.
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Miri
+        run: |
+          rustup toolchain install nightly --component miri
+          rustup override set nightly
+          cargo miri setup
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-miri-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-miri-
+      - name: Test with Miri
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo miri test --no-default-features
