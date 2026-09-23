@@ -12,9 +12,32 @@ exclude = [".agents/", ".beads/", ".claude/", ".codex/", ".cursor/", ".github/",
 name = "adelie"
 path = "src/lib.rs"
 
+# The `adelie` binary. Gated behind `cli`, which the default feature set enables, so
+# `cargo install adelie` builds it and `cargo binstall adelie` fetches a prebuilt one.
+# `--no-default-features` is the lean library build and refuses to build the binary.
+[[bin]]
+name = "adelie"
+path = "src/bin/adelie.rs"
+required-features = ["cli"]
+
 [features]
-# Empty until the first feature lands. `--no-default-features` is the lean library build
-# and is what `just test`/`just ci` run; CI's build budget times it clean (D0004).
-default = []
+# The default build ships the whole binary. `--no-default-features` is the lean library
+# build that `just test`/`just ci` run and CI's build budget times clean (D0004).
+default = ["cli"]
+cli = []
 
 [dependencies]
+
+# Prebuilt-binary fetch for `cargo binstall adelie`. Release assets are
+# `adelie-<target>.tar.gz` (`.zip` on Windows), each holding the bare `adelie` binary.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/adelie-{ target }{ archive-suffix }"
+bin-dir = "adelie{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

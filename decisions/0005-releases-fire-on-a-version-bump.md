@@ -6,7 +6,8 @@
 
 ## Why
 
-`release.yml` runs on every push to `main`. It publishes to crates.io, tags `v<version>`, and
+`release.yml` runs on every push to `main`. It builds the binary for five targets, publishes to
+crates.io, tags `v<version>`, and
 creates a GitHub release only when that tag does not exist yet. So a PR that does not bump the
 version ships nothing, silently. Runs are serialized so a merge train cannot race the tag check.
 

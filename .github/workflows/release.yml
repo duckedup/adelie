@@ -55,6 +55,81 @@ jobs:
             echo "Tag v$VERSION does not exist, will release"
           fi
 
+  # Build the `adelie` binary for each target and upload it as a release artifact. Asset
+  # names are `adelie-<target>.tar.gz` (`.zip` on Windows), each holding the bare binary,
+  # matching `[package.metadata.binstall]` so `cargo binstall adelie` resolves them.
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # rust-toolchain.toml pins the channel, so add the target to the pinned toolchain,
+      # not the one dtolnay set up. `cross` provides std itself, so skip it there.
+      - name: Add target to the pinned toolchain
+        if: "!matrix.use_cross"
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with cross
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build with cargo
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../adelie-${{ matrix.target }}.tar.gz adelie
+          cd ../../..
+          shasum -a 256 "adelie-${{ matrix.target }}.tar.gz" > "adelie-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/adelie.exe" -DestinationPath "adelie-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "adelie-${{ matrix.target }}.zip").Hash.ToLower()
+          "$hash  adelie-${{ matrix.target }}.zip" | Out-File -Encoding ascii -NoNewline "adelie-${{ matrix.target }}.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: adelie-${{ matrix.target }}.*
+
+  # The library is published to crates.io; the binaries above ride the GitHub release.
   publish-crate:
     name: Publish to crates.io
     needs: check-version
@@ -86,13 +161,19 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: [check-version, publish-crate]
+    needs: [check-version, build-binaries, publish-crate]
     if: "!failure() && !cancelled() && needs.check-version.outputs.should_release == 'true'"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          merge-multiple: true
 
       - name: Create tag
         run: |
@@ -113,10 +194,25 @@ jobs:
           else
             NOTES=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD)
           fi
-          gh release create "$TAG" --title "$TAG" --latest --notes "## adelie ${VERSION}
+          gh release create "$TAG" \
+            adelie-*.tar.gz adelie-*.zip adelie-*.sha256 \
+            --title "$TAG" \
+            --latest \
+            --notes "## adelie ${VERSION}
+
+          As a library:
 
           \`\`\`sh
           cargo add adelie@${VERSION}
           \`\`\`
+
+          As a binary:
+
+          \`\`\`sh
+          cargo binstall adelie   # prebuilt binary
+          cargo install adelie    # from source
+          \`\`\`
+
+          ### Changes
 
           ${NOTES}"
