@@ -11,6 +11,7 @@ pub use batch::{Batch, BatchError, Field};
 pub use bitmap::Bitmap;
 pub use coalesce::coalesce_companion;
 pub use column::{Column, ColumnBuilder, ColumnError};
+pub(crate) use column::{ColumnValues, OwnedValues};
 pub use stats::ColumnStats;
 
 /// Operators process column batches of about this many rows (SPEC §7). A target, not a cap.

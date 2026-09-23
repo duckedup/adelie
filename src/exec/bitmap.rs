@@ -77,6 +77,17 @@ impl Bitmap {
     pub(crate) fn words(&self) -> &[u64] {
         &self.words
     }
+
+    /// `None` unless `words.len() == len.div_ceil(64)` and every bit at or past `len` is 0.
+    /// The decoder feeds this attacker-controlled bytes, so both are checked, not assumed.
+    pub(crate) fn from_words(words: Vec<u64>, len: usize) -> Option<Bitmap> {
+        if words.len() != word_count(len) {
+            return None;
+        }
+        let mut masked = words.clone();
+        mask_trailing(&mut masked, len);
+        (masked == words).then_some(Bitmap { words, len })
+    }
 }
 
 fn word_count(len: usize) -> usize {
@@ -166,5 +177,25 @@ mod tests {
     fn byte_size_is_word_capacity_times_eight() {
         let bm = Bitmap::new_valid(1);
         assert_eq!(bm.byte_size(), bm.words.capacity() * 8);
+    }
+
+    #[test]
+    fn from_words_rejects_wrong_word_count() {
+        assert!(Bitmap::from_words(vec![0], 65).is_none());
+        assert!(Bitmap::from_words(vec![0, 0], 64).is_none());
+    }
+
+    #[test]
+    fn from_words_rejects_set_trailing_bit() {
+        assert!(Bitmap::from_words(vec![0b1000], 3).is_none());
+    }
+
+    #[test]
+    fn from_words_accepts_clean_bits() {
+        let bm = Bitmap::from_words(vec![0b101], 3).unwrap();
+        assert_eq!(bm.len(), 3);
+        assert!(bm.get(0));
+        assert!(!bm.get(1));
+        assert!(bm.get(2));
     }
 }

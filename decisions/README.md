@@ -12,3 +12,4 @@ rule, why it exists, and the evidence.
 | [D0005](0005-releases-fire-on-a-version-bump.md) | Bump the version to release; 0.0.0 never releases |
 | [D0006](0006-duckdb-lives-in-its-own-bench-workspace.md) | DuckDB lives in `bench/`, a separate Cargo workspace excluded from the root |
 | [D0007](0007-the-type-set-adds-decimal-uuid-ip.md) | The v1 type set adds `DECIMAL(p, s)`, `UUID`, and `IP` |
+| [D0008](0008-segment-format-v1.md) | Segment format v1: CRC32C framing, fixed type/encoding/index ids, additive records |

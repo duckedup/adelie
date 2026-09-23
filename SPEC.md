@@ -202,19 +202,26 @@ A store directory:
   <db>/<table>/
     <partition>/
       <segment-id>.seg   immutable segment files
-      <segment-id>.idx   optional derived indexes (bloom, full-text); rebuildable
+      <segment-id>.idx   optional derived indexes (bloom, full-text); rebuildable, bound
+                         to its segment by the segment's footer CRC
 ```
 
 **Segment.** An immutable file of up to ~1M rows, split into **row groups** of ~64k rows (the
 unit of pruning and of parallel work).
 
 - Layout: header, column chunks, footer. The footer is a column directory: per column and row
-  group, the encoding, byte range, row count, null count, min/max, and optional bloom-filter
-  offset.
-- Every column chunk and the footer carry a CRC32. A corrupt chunk is an error naming the
+  group, the encoding, byte range, row count, null count, and min/max. A column is described by
+  a logical type id plus parameters, and an unknown one is an error naming it. Min/max are
+  bounds, and long strings are truncated. A generic index directory (kind, columns, byte range,
+  CRC) lists derived structures, and readers skip kinds they do not know.
+- Every column chunk and the footer carry a CRC32C. A corrupt chunk is an error naming the
   segment and column, never a wrong answer.
+- Every footer structure is length-prefixed, and readers ignore trailing bytes they do not
+  know. This is how the format rule holds.
 - A reader decodes only the columns a query touches, and only the row groups its predicates
   cannot prune.
+- A segment holds no engine metadata (commit sequence, engine name, deletion vectors);
+  identical input gives byte-identical output (§18, D0008).
 
 **Encodings** (pure Rust, chosen per chunk by the writer):
 
@@ -225,7 +232,8 @@ unit of pruning and of parallel work).
 - Booleans and null masks: bitmaps, RLE.
 - An optional block compressor on top: `lz4_flex`. No zstd (C dependency).
 - There are no per-column codec declarations: the writer picks per chunk by trying candidates
-  on a sample. A table may pin an encoding for a column; skip structures are adaptive (§16.2).
+  on a deterministic sample. A table may pin an encoding for a column; skip structures are
+  adaptive (§16.2).
 
 **Manifest.** The one mutable object: the live segment set per table, each segment's partition,
 row count, and column summary, the table schemas, and a monotonic version. It is CRC-checked
@@ -522,7 +530,9 @@ CREATE ROLLUP spans_1m ON otel.spans
 - Encodings are chosen per chunk by the writer (§5); nobody declares codecs.
 - Min/max stats are always kept. Other **skip structures** (bloom filter, value set, n-gram
   index) are built per column at compaction when the query log shows predicates on that column
-  and its profile (§17.2) says the structure would prune. Unused ones are dropped (Q11).
+  and its profile (§17.2) says the structure would prune. Unused ones are dropped (Q11). Until
+  that policy exists (Q11), a structure is built only when asked for: pinned by a table, or
+  requested when writing or indexing a segment.
 - The store tunes its own pruning from its own query log. A table may pin a structure; `EXPLAIN`
   shows which structures pruned what.
 
