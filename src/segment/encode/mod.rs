@@ -64,7 +64,11 @@ impl Encoding {
             Encoding::Dict => matches!(ty, DataType::String | DataType::Bytes),
             Encoding::Rle => matches!(
                 ty,
-                DataType::Bool | DataType::Int64 | DataType::UInt64 | DataType::Timestamp | DataType::Date
+                DataType::Bool
+                    | DataType::Int64
+                    | DataType::UInt64
+                    | DataType::Timestamp
+                    | DataType::Date
             ),
             Encoding::For | Encoding::Delta | Encoding::DeltaOfDelta => matches!(
                 ty,
@@ -132,7 +136,8 @@ pub(crate) fn decode_column(
     if !cur.is_empty() {
         return Err(DecodeError::Malformed("trailing bytes after chunk values"));
     }
-    Column::from_parts(ty.clone(), values, validity).map_err(|_| DecodeError::Malformed("column parts"))
+    Column::from_parts(ty.clone(), values, validity)
+        .map_err(|_| DecodeError::Malformed("column parts"))
 }
 
 fn encode_values(col: &Column, enc: Encoding, out: &mut Sink) {
@@ -174,7 +179,9 @@ fn encode_xor(col: &Column, out: &mut Sink) {
 fn as_i64(cv: ColumnValues<'_>) -> Option<std::borrow::Cow<'_, [i64]>> {
     match cv {
         ColumnValues::Int64(v) | ColumnValues::Timestamp(v) => Some(std::borrow::Cow::Borrowed(v)),
-        ColumnValues::Date(v) => Some(std::borrow::Cow::Owned(v.iter().map(|&x| x as i64).collect())),
+        ColumnValues::Date(v) => Some(std::borrow::Cow::Owned(
+            v.iter().map(|&x| x as i64).collect(),
+        )),
         _ => None,
     }
 }
@@ -232,11 +239,18 @@ fn decode_dict(
     match ty {
         DataType::String => Ok(OwnedValues::String { offsets, data }),
         DataType::Bytes => Ok(OwnedValues::Bytes { offsets, data }),
-        _ => Err(DecodeError::Malformed("dict encoding used on a non-string/bytes type")),
+        _ => Err(DecodeError::Malformed(
+            "dict encoding used on a non-string/bytes type",
+        )),
     }
 }
 
-fn decode_int_like(ty: &DataType, rows: usize, enc: Encoding, cur: &mut Cursor) -> Result<OwnedValues, DecodeError> {
+fn decode_int_like(
+    ty: &DataType,
+    rows: usize,
+    enc: Encoding,
+    cur: &mut Cursor,
+) -> Result<OwnedValues, DecodeError> {
     match ty {
         DataType::Int64 => Ok(OwnedValues::Int64(decode_i64_by(enc, cur, rows)?)),
         DataType::Timestamp => Ok(OwnedValues::Timestamp(decode_i64_by(enc, cur, rows)?)),
@@ -245,11 +259,16 @@ fn decode_int_like(ty: &DataType, rows: usize, enc: Encoding, cur: &mut Cursor) 
             let v = decode_i64_by(enc, cur, rows)?;
             let mut narrowed = Vec::with_capacity(v.len());
             for x in v {
-                narrowed.push(i32::try_from(x).map_err(|_| DecodeError::Malformed("date value out of i32 range"))?);
+                narrowed.push(
+                    i32::try_from(x)
+                        .map_err(|_| DecodeError::Malformed("date value out of i32 range"))?,
+                );
             }
             Ok(OwnedValues::Date(narrowed))
         }
-        _ => Err(DecodeError::Malformed("encoding does not apply to this type")),
+        _ => Err(DecodeError::Malformed(
+            "encoding does not apply to this type",
+        )),
     }
 }
 
@@ -311,7 +330,12 @@ mod tests {
         );
         round_trip(
             &DataType::Int64,
-            &[Value::Int64(1), Value::Null, Value::Int64(-2), Value::Int64(3)],
+            &[
+                Value::Int64(1),
+                Value::Null,
+                Value::Int64(-2),
+                Value::Int64(3),
+            ],
         );
         round_trip(
             &DataType::UInt64,
@@ -323,7 +347,11 @@ mod tests {
         );
         round_trip(
             &DataType::String,
-            &[Value::String("a".into()), Value::Null, Value::String("bb".into())],
+            &[
+                Value::String("a".into()),
+                Value::Null,
+                Value::String("bb".into()),
+            ],
         );
         round_trip(
             &DataType::Bytes,
@@ -333,7 +361,10 @@ mod tests {
             &DataType::Timestamp,
             &[Value::Timestamp(1), Value::Null, Value::Timestamp(-1)],
         );
-        round_trip(&DataType::Date, &[Value::Date(1), Value::Null, Value::Date(-1)]);
+        round_trip(
+            &DataType::Date,
+            &[Value::Date(1), Value::Null, Value::Date(-1)],
+        );
         round_trip(
             &DataType::Uuid,
             &[Value::Uuid([1; 16]), Value::Null, Value::Uuid([2; 16])],

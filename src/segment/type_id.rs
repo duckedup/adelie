@@ -33,9 +33,7 @@ pub(crate) fn encode_type(ty: &DataType, out: &mut Sink) {
         DataType::Int64 => encode_raw_type(TYPE_INT64, &[], out),
         DataType::UInt64 => encode_raw_type(TYPE_UINT64, &[], out),
         DataType::Float64 => encode_raw_type(TYPE_FLOAT64, &[], out),
-        DataType::Decimal(dt) => {
-            encode_raw_type(TYPE_DECIMAL, &[dt.precision(), dt.scale()], out)
-        }
+        DataType::Decimal(dt) => encode_raw_type(TYPE_DECIMAL, &[dt.precision(), dt.scale()], out),
         DataType::String => encode_raw_type(TYPE_STRING, &[], out),
         DataType::Bytes => encode_raw_type(TYPE_BYTES, &[], out),
         DataType::Timestamp => encode_raw_type(TYPE_TIMESTAMP, &[], out),
@@ -125,7 +123,10 @@ mod tests {
         encode_raw_type(TYPE_DECIMAL, &[39, 0], &mut s);
         let buf = s.into_vec();
         let mut c = Cursor::new(&buf);
-        assert!(matches!(decode_type(&mut c), Err(DecodeError::Malformed(_))));
+        assert!(matches!(
+            decode_type(&mut c),
+            Err(DecodeError::Malformed(_))
+        ));
     }
 
     #[test]

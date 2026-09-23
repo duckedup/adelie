@@ -52,7 +52,9 @@ impl Bloom {
 
     /// `next_pow2(max(512, 10 * distinct))`, capped at `2^20` (SPEC §16.2).
     fn size_log2(distinct: usize) -> u8 {
-        let want = 10u64.saturating_mul(distinct as u64).max(1u64 << MIN_LOG2_BITS);
+        let want = 10u64
+            .saturating_mul(distinct as u64)
+            .max(1u64 << MIN_LOG2_BITS);
         let mut log2 = MIN_LOG2_BITS;
         while (1u64 << log2) < want && log2 < MAX_LOG2_BITS {
             log2 += 1;
@@ -128,14 +130,19 @@ impl Bloom {
         if !c.is_empty() {
             return Err(DecodeError::Malformed("bloom blob has trailing bytes"));
         }
-        Ok(Bloom { k, log2_bits, words, ty: ty.clone() })
+        Ok(Bloom {
+            k,
+            log2_bits,
+            words,
+            ty: ty.clone(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::SplitMix64;
+    use super::*;
     use crate::types::Decimal;
 
     const N: usize = if cfg!(miri) { 200 } else { 5000 };
@@ -183,19 +190,28 @@ mod tests {
     #[test]
     fn no_false_negatives_int64() {
         let mut rng = SplitMix64::new(1);
-        no_false_negatives(DataType::Int64, (0..N).map(|_| random_int64(&mut rng)).collect());
+        no_false_negatives(
+            DataType::Int64,
+            (0..N).map(|_| random_int64(&mut rng)).collect(),
+        );
     }
 
     #[test]
     fn no_false_negatives_string() {
         let mut rng = SplitMix64::new(2);
-        no_false_negatives(DataType::String, (0..N).map(|_| random_string(&mut rng)).collect());
+        no_false_negatives(
+            DataType::String,
+            (0..N).map(|_| random_string(&mut rng)).collect(),
+        );
     }
 
     #[test]
     fn no_false_negatives_uuid() {
         let mut rng = SplitMix64::new(3);
-        no_false_negatives(DataType::Uuid, (0..N).map(|_| random_uuid(&mut rng)).collect());
+        no_false_negatives(
+            DataType::Uuid,
+            (0..N).map(|_| random_uuid(&mut rng)).collect(),
+        );
     }
 
     #[test]
@@ -273,7 +289,10 @@ mod tests {
     #[test]
     fn bad_k_is_malformed() {
         let mut blob = vec![0u8, MIN_LOG2_BITS as u8];
-        blob.extend(std::iter::repeat_n(0u8, 8 * ((1usize << MIN_LOG2_BITS) / 64)));
+        blob.extend(std::iter::repeat_n(
+            0u8,
+            8 * ((1usize << MIN_LOG2_BITS) / 64),
+        ));
         assert!(matches!(
             Bloom::load(&DataType::Int64, &blob),
             Err(DecodeError::Malformed(_))
@@ -292,7 +311,10 @@ mod tests {
     #[test]
     fn trailing_bytes_are_malformed() {
         let mut blob = vec![K, MIN_LOG2_BITS as u8];
-        blob.extend(std::iter::repeat_n(0u8, 8 * ((1usize << MIN_LOG2_BITS) / 64) + 1));
+        blob.extend(std::iter::repeat_n(
+            0u8,
+            8 * ((1usize << MIN_LOG2_BITS) / 64) + 1,
+        ));
         assert!(matches!(
             Bloom::load(&DataType::Int64, &blob),
             Err(DecodeError::Malformed(_))

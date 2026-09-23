@@ -61,7 +61,11 @@ pub(super) fn encode(col: &Column, out: &mut Sink) {
     }
 }
 
-pub(super) fn decode(ty: &DataType, rows: usize, cur: &mut Cursor) -> Result<OwnedValues, DecodeError> {
+pub(super) fn decode(
+    ty: &DataType,
+    rows: usize,
+    cur: &mut Cursor,
+) -> Result<OwnedValues, DecodeError> {
     match ty {
         DataType::Bool => {
             let n = cur.guard_len(rows.div_ceil(64) as u64, 8)?;
@@ -125,7 +129,9 @@ pub(super) fn decode(ty: &DataType, rows: usize, cur: &mut Cursor) -> Result<Own
             }
             let child_id = cur.uvarint()?;
             let child_bytes = cur.bytes()?;
-            let last = offsets.last().ok_or(DecodeError::Malformed("missing list offsets"))?;
+            let last = offsets
+                .last()
+                .ok_or(DecodeError::Malformed("missing list offsets"))?;
             let child_rows = *last as usize;
             let values = super::decode_column(lt.element(), child_rows, child_id, child_bytes)?;
             Ok(OwnedValues::List { offsets, values })
@@ -146,18 +152,27 @@ fn read_arrays(cur: &mut Cursor, rows: usize) -> Result<Vec<[u8; 16]>, DecodeErr
     let n = cur.guard_len(rows as u64, 16)?;
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
-        v.push(cur.raw(16)?.try_into().expect("raw(16) returns exactly 16 bytes"));
+        v.push(
+            cur.raw(16)?
+                .try_into()
+                .expect("raw(16) returns exactly 16 bytes"),
+        );
     }
     Ok(v)
 }
 
-fn read_offsets_and_data(cur: &mut Cursor, rows: usize) -> Result<(Vec<u32>, Vec<u8>), DecodeError> {
+fn read_offsets_and_data(
+    cur: &mut Cursor,
+    rows: usize,
+) -> Result<(Vec<u32>, Vec<u8>), DecodeError> {
     let noffsets = cur.guard_len((rows as u64) + 1, 4)?;
     let mut offsets = Vec::with_capacity(noffsets);
     for _ in 0..noffsets {
         offsets.push(cur.u32()?);
     }
-    let last = *offsets.last().ok_or(DecodeError::Malformed("missing offsets"))?;
+    let last = *offsets
+        .last()
+        .ok_or(DecodeError::Malformed("missing offsets"))?;
     let data = cur.raw(last as usize)?.to_vec();
     Ok((offsets, data))
 }
@@ -185,10 +200,22 @@ mod tests {
         round_trip(&DataType::Bool, &[Value::Bool(true), Value::Bool(false)]);
         round_trip(&DataType::Int64, &[Value::Int64(1), Value::Int64(-2)]);
         round_trip(&DataType::UInt64, &[Value::UInt64(1), Value::UInt64(2)]);
-        round_trip(&DataType::Float64, &[Value::Float64(1.5), Value::Float64(-2.0)]);
-        round_trip(&DataType::String, &[Value::String("a".into()), Value::String("bb".into())]);
-        round_trip(&DataType::Bytes, &[Value::Bytes(vec![1, 2]), Value::Bytes(vec![])]);
-        round_trip(&DataType::Timestamp, &[Value::Timestamp(1), Value::Timestamp(-1)]);
+        round_trip(
+            &DataType::Float64,
+            &[Value::Float64(1.5), Value::Float64(-2.0)],
+        );
+        round_trip(
+            &DataType::String,
+            &[Value::String("a".into()), Value::String("bb".into())],
+        );
+        round_trip(
+            &DataType::Bytes,
+            &[Value::Bytes(vec![1, 2]), Value::Bytes(vec![])],
+        );
+        round_trip(
+            &DataType::Timestamp,
+            &[Value::Timestamp(1), Value::Timestamp(-1)],
+        );
         round_trip(&DataType::Date, &[Value::Date(1), Value::Date(-1)]);
     }
 

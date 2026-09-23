@@ -2,5 +2,5 @@
 #![deny(unsafe_code)]
 
 pub mod exec;
-pub mod format;
+pub mod segment;
 pub mod types;

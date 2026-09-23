@@ -44,7 +44,9 @@ pub(crate) fn decode_value(cur: &mut Cursor, ty: &DataType) -> Result<Value, Dec
         DataType::Decimal(dt) => {
             let unscaled = cur.i128()?;
             if unscaled.unsigned_abs() >= pow10(dt.precision()) as u128 {
-                return Err(DecodeError::Malformed("decimal magnitude exceeds precision"));
+                return Err(DecodeError::Malformed(
+                    "decimal magnitude exceeds precision",
+                ));
             }
             let d = Decimal::new(unscaled, dt.scale())
                 .map_err(|_| DecodeError::Malformed("bad decimal value"))?;
@@ -102,7 +104,9 @@ mod tests {
         let out = decode_value(&mut c, &ty).unwrap();
         assert_eq!(total_cmp(&v, &out), Some(Equal));
         if let Value::Float64(x) = v {
-            let Value::Float64(y) = out else { panic!("expected float") };
+            let Value::Float64(y) = out else {
+                panic!("expected float")
+            };
             assert_eq!(x.to_bits(), y.to_bits());
         }
     }
@@ -128,7 +132,10 @@ mod tests {
         round_trip(Value::Timestamp(123), DataType::Timestamp);
         round_trip(Value::Date(-1), DataType::Date);
         round_trip(Value::Uuid([9; 16]), DataType::Uuid);
-        round_trip(Value::Ip(Ip::from("127.0.0.1".parse::<IpAddr>().unwrap())), DataType::Ip);
+        round_trip(
+            Value::Ip(Ip::from("127.0.0.1".parse::<IpAddr>().unwrap())),
+            DataType::Ip,
+        );
     }
 
     #[test]

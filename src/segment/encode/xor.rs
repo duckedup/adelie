@@ -1,11 +1,15 @@
 //! XOR / Gorilla (encoding id 6, SPEC §5): FLOAT64 only, bit-exact via `to_bits`. Each value
 //! after the first is coded against the previous value's bit pattern.
 
-use crate::format::error::DecodeError;
-use crate::format::wire::{Cursor, Sink};
+use crate::segment::error::DecodeError;
+use crate::segment::wire::{Cursor, Sink};
 
 fn mask(bits: u32) -> u64 {
-    if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
 }
 
 pub(super) fn encode(v: &[f64], out: &mut Sink) {
@@ -153,6 +157,6 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode(&mut c, crate::format::MAX_DECODE_ROWS).is_err());
+        assert!(decode(&mut c, crate::segment::MAX_DECODE_ROWS).is_err());
     }
 }

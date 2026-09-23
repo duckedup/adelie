@@ -83,7 +83,11 @@ pub(crate) fn decode_footer(bytes: &[u8]) -> Result<Footer, Located> {
     let row_groups = decode_row_groups(&mut cur, &fields)?;
     let mut idx_body = cur.record().map_err(Located::from)?;
     let indexes = decode_directory(&mut idx_body).map_err(Located::from)?;
-    Ok(Footer { fields, row_groups, indexes })
+    Ok(Footer {
+        fields,
+        row_groups,
+        indexes,
+    })
 }
 
 fn decode_schema(cur: &mut Cursor) -> Result<Vec<Field>, Located> {
@@ -94,8 +98,10 @@ fn decode_schema(cur: &mut Cursor) -> Result<Vec<Field>, Located> {
     for _ in 0..ncols {
         let mut cd = body.record().map_err(Located::from)?;
         let name = cd.str().map_err(Located::from)?.to_string();
-        let ty = type_id::decode_type(&mut cd)
-            .map_err(|err| Located { err, column: Some(name.clone()) })?;
+        let ty = type_id::decode_type(&mut cd).map_err(|err| Located {
+            err,
+            column: Some(name.clone()),
+        })?;
         fields.push(Field { name, ty });
     }
     Ok(fields)
@@ -111,7 +117,12 @@ fn decode_row_groups(cur: &mut Cursor, fields: &[Field]) -> Result<Vec<RawRowGro
         let rows = rg_body.uvarint().map_err(Located::from)?;
         let mut chunks = Vec::with_capacity(fields.len());
         for field in fields {
-            chunks.push(decode_chunk_meta(&mut rg_body, &field.ty, rows, &field.name)?);
+            chunks.push(decode_chunk_meta(
+                &mut rg_body,
+                &field.ty,
+                rows,
+                &field.name,
+            )?);
         }
         row_groups.push(RawRowGroup { rows, chunks });
     }
@@ -124,7 +135,10 @@ fn decode_chunk_meta(
     rows: u64,
     column: &str,
 ) -> Result<RawChunk, Located> {
-    let loc = |err: DecodeError| Located { err, column: Some(column.to_string()) };
+    let loc = |err: DecodeError| Located {
+        err,
+        column: Some(column.to_string()),
+    };
     let mut body = cur.record().map_err(loc)?;
     let offset = body.uvarint().map_err(loc)?;
     let len = body.uvarint().map_err(loc)?;
@@ -132,11 +146,21 @@ fn decode_chunk_meta(
     let encoding = body.uvarint().map_err(loc)?;
     let null_count = body.uvarint().map_err(loc)?;
     if null_count > rows {
-        return Err(loc(DecodeError::Malformed("null_count exceeds row group rows")));
+        return Err(loc(DecodeError::Malformed(
+            "null_count exceeds row group rows",
+        )));
     }
     let min = decode_opt(&mut body, ty).map_err(loc)?;
     let max = decode_opt(&mut body, ty).map_err(loc)?;
-    Ok(RawChunk { offset, len, crc, encoding, null_count, min, max })
+    Ok(RawChunk {
+        offset,
+        len,
+        crc,
+        encoding,
+        null_count,
+        min,
+        max,
+    })
 }
 
 /// SPEC §5 bounds: STRING/BYTES min truncated to STATS_MAX_BYTES (char boundary), max dropped
@@ -283,9 +307,18 @@ mod tests {
 
     fn fields() -> Vec<Field> {
         vec![
-            Field { name: "i".to_string(), ty: DataType::Int64 },
-            Field { name: "s".to_string(), ty: DataType::String },
-            Field { name: "l".to_string(), ty: DataType::list(DataType::Int64).unwrap() },
+            Field {
+                name: "i".to_string(),
+                ty: DataType::Int64,
+            },
+            Field {
+                name: "s".to_string(),
+                ty: DataType::String,
+            },
+            Field {
+                name: "l".to_string(),
+                ty: DataType::list(DataType::Int64).unwrap(),
+            },
         ]
     }
 
@@ -391,7 +424,10 @@ mod tests {
         let bytes = encode_footer_with_raw_type(&f, 1, 999, &[]);
         assert_eq!(
             decode_footer(&bytes).unwrap_err(),
-            Located { err: DecodeError::UnknownTypeId(999), column: Some("s".to_string()) }
+            Located {
+                err: DecodeError::UnknownTypeId(999),
+                column: Some("s".to_string())
+            }
         );
         // Control: the real STRING id (6) still decodes fine.
         let bytes_ok = encode_footer_with_raw_type(&f, 1, 6, &[]);
@@ -432,7 +468,12 @@ mod tests {
         assert_eq!(bound_stats(&stats), (stats.min.clone(), stats.max.clone()));
     }
 
-    fn trailer_bytes(magic: [u8; 6], version: u16, footer: &[u8], footer_len_override: Option<u32>) -> Vec<u8> {
+    fn trailer_bytes(
+        magic: [u8; 6],
+        version: u16,
+        footer: &[u8],
+        footer_len_override: Option<u32>,
+    ) -> Vec<u8> {
         let mut out = vec![0u8; 8];
         out.extend_from_slice(footer);
         let footer_len = footer_len_override.unwrap_or(footer.len() as u32);
@@ -512,7 +553,10 @@ mod tests {
     }
 
     fn ip_field(name: &str) -> Field {
-        Field { name: name.to_string(), ty: DataType::Ip }
+        Field {
+            name: name.to_string(),
+            ty: DataType::Ip,
+        }
     }
 
     #[test]

@@ -464,7 +464,7 @@ it must not break the default build budget.
 src/
   lib.rs        public API (Store, Table, sql), #![deny(unsafe_code)]
   types/        type system, values, casts
-  format/       segment writer and reader, encodings, CRC framing
+  segment/      segment writer and reader, encodings, CRC framing, skip structures
   manifest/     manifest codec, publish, snapshots, retention
   store/        tables, write buffer, flush, compaction, deletes, rollups, lock
   exec/         batches, kernels, operators, morsel scheduler, memory budget

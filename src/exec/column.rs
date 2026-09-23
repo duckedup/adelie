@@ -48,7 +48,7 @@ enum ColumnData {
     },
 }
 
-/// Borrowed column buffers, one variant per `ColumnData` kind, for `src/format/encode` to
+/// Borrowed column buffers, one variant per `ColumnData` kind, for `src/segment/encode` to
 /// read without going through `Value` one row at a time.
 pub(crate) enum ColumnValues<'a> {
     Bool(&'a Bitmap),
@@ -60,9 +60,18 @@ pub(crate) enum ColumnValues<'a> {
     Date(&'a [i32]),
     Uuid(&'a [[u8; 16]]),
     Ip(&'a [[u8; 16]]),
-    String { offsets: &'a [u32], data: &'a [u8] },
-    Bytes { offsets: &'a [u32], data: &'a [u8] },
-    List { offsets: &'a [u32], values: &'a Column },
+    String {
+        offsets: &'a [u32],
+        data: &'a [u8],
+    },
+    Bytes {
+        offsets: &'a [u32],
+        data: &'a [u8],
+    },
+    List {
+        offsets: &'a [u32],
+        values: &'a Column,
+    },
 }
 
 /// Owned counterpart of `ColumnValues`, for the decoder to hand `from_parts` freshly built
@@ -327,7 +336,10 @@ impl Column {
             "slice {start}..{end} out of range for column len {}",
             self.len()
         );
-        let validity = self.validity.as_ref().map(|bm| slice_bitmap(bm, start, len));
+        let validity = self
+            .validity
+            .as_ref()
+            .map(|bm| slice_bitmap(bm, start, len));
         let null_count = validity.as_ref().map_or(0, |v| len - v.count_valid());
         let data = match &self.data {
             ColumnData::Bool(bm) => ColumnData::Bool(slice_bitmap(bm, start, len)),
@@ -497,7 +509,9 @@ fn build_data(ty: &DataType, values: OwnedValues) -> Result<(ColumnData, usize),
                 rows,
             ))
         }
-        _ => Err(ColumnError::Malformed("value variant does not match column type")),
+        _ => Err(ColumnError::Malformed(
+            "value variant does not match column type",
+        )),
     }
 }
 
@@ -529,8 +543,8 @@ fn concat_scalar<T: Copy>(
 ) -> Result<Vec<T>, ColumnError> {
     let mut out = Vec::with_capacity(cols.iter().map(Column::len).sum());
     for c in cols {
-        let slice = extract(&c.data)
-            .ok_or(ColumnError::Malformed("column variant mismatch in concat"))?;
+        let slice =
+            extract(&c.data).ok_or(ColumnError::Malformed("column variant mismatch in concat"))?;
         out.extend_from_slice(slice);
     }
     Ok(out)
@@ -547,7 +561,9 @@ fn concat_varwidth(
     for c in cols {
         let (o, d) =
             extract(&c.data).ok_or(ColumnError::Malformed("column variant mismatch in concat"))?;
-        let base = *offsets.last().expect("offsets always starts with one entry");
+        let base = *offsets
+            .last()
+            .expect("offsets always starts with one entry");
         for &off in &o[1..] {
             offsets.push(base.checked_add(off).ok_or(ColumnError::TooLarge)?);
         }
@@ -565,7 +581,9 @@ fn concat_list(cols: &[Column], elem_ty: &DataType) -> Result<(Vec<u32>, Column)
         let ColumnData::List { offsets: o, values } = &c.data else {
             return Err(ColumnError::Malformed("column variant mismatch in concat"));
         };
-        let base = *offsets.last().expect("offsets always starts with one entry");
+        let base = *offsets
+            .last()
+            .expect("offsets always starts with one entry");
         for &off in &o[1..] {
             offsets.push(base.checked_add(off).ok_or(ColumnError::TooLarge)?);
         }
@@ -1304,9 +1322,12 @@ mod tests {
 
     #[test]
     fn from_parts_rejects_variant_mismatch() {
-        let err =
-            Column::from_parts(DataType::Int64, OwnedValues::Bool(Bitmap::new_valid(2)), None)
-                .unwrap_err();
+        let err = Column::from_parts(
+            DataType::Int64,
+            OwnedValues::Bool(Bitmap::new_valid(2)),
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, ColumnError::Malformed(_)));
     }
 
@@ -1507,8 +1528,7 @@ mod tests {
             Column::from_values(&DataType::Int64, &[Value::Int64(1), Value::Null]).unwrap();
         let without_nulls =
             Column::from_values(&DataType::Int64, &[Value::Int64(3), Value::Int64(4)]).unwrap();
-        let combined =
-            Column::concat(&DataType::Int64, &[with_nulls, without_nulls]).unwrap();
+        let combined = Column::concat(&DataType::Int64, &[with_nulls, without_nulls]).unwrap();
         assert_eq!(combined.null_count(), 1);
         assert!(!combined.is_null(0));
         assert!(combined.is_null(1));

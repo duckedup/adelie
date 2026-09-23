@@ -62,7 +62,9 @@ mod tests {
 
     #[test]
     fn repeated_string_chooses_dict() {
-        let values: Vec<Value> = (0..10_000).map(|_| Value::String("same-value".into())).collect();
+        let values: Vec<Value> = (0..10_000)
+            .map(|_| Value::String("same-value".into()))
+            .collect();
         let col = Column::from_values(&DataType::String, &values).unwrap();
         assert_eq!(choose(&col), Encoding::Dict);
     }
@@ -70,9 +72,7 @@ mod tests {
     #[test]
     fn random_u64_avoids_dict_and_rle() {
         let mut rng = SplitMix64::new(99);
-        let values: Vec<Value> = (0..10_000)
-            .map(|_| Value::UInt64(rng.next_u64()))
-            .collect();
+        let values: Vec<Value> = (0..10_000).map(|_| Value::UInt64(rng.next_u64())).collect();
         let col = Column::from_values(&DataType::UInt64, &values).unwrap();
         let chosen = choose(&col);
         assert!(

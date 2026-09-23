@@ -1,4 +1,4 @@
-//! `SegmentReader` (SPEC §5, D0008): opens a `.seg` file, validates its footer against the
+//! `Reader` (SPEC §5, D0008): opens a `.seg` file, validates its footer against the
 //! body, and decodes columns, row groups and skip indexes on demand.
 
 use crate::exec::{Batch, Column, Field};
@@ -7,7 +7,7 @@ use crate::types::Value;
 use super::crc::crc32c;
 use super::directory::RawIndexEntry;
 use super::encode::{Encoding, decode_column};
-use super::error::{FormatError, Located};
+use super::error::{Error, Located};
 use super::footer::{Footer, TrailerError, decode_footer, read_trailer};
 use super::index::{self, IndexKind, SkipIndex};
 use super::{FORMAT_VERSION, HEADER_LEN, MAX_DECODE_ROWS, SEGMENT_MAGIC};
@@ -43,7 +43,7 @@ pub struct IndexEntry {
 
 /// An open, validated `.seg` file (SPEC §5). Every offset stored here has already been
 /// checked to lie in `[HEADER_LEN, footer_start)`, so reads never need to re-check bounds.
-pub struct SegmentReader<B: AsRef<[u8]>> {
+pub struct Reader<B: AsRef<[u8]>> {
     name: String,
     bytes: B,
     fields: Vec<Field>,
@@ -54,13 +54,14 @@ pub struct SegmentReader<B: AsRef<[u8]>> {
     footer_crc: u32,
 }
 
-impl<B: AsRef<[u8]>> SegmentReader<B> {
+impl<B: AsRef<[u8]>> Reader<B> {
     /// Validates the trailer, the header, the footer, every chunk's encoding/range, and
     /// every index entry's range/ordinals, in that order (SPEC §5). See the module tests.
-    pub fn open(name: impl Into<String>, bytes: B) -> Result<Self, FormatError> {
+    pub fn open(name: impl Into<String>, bytes: B) -> Result<Self, Error> {
         let name = name.into();
         let buf = bytes.as_ref();
-        let footer_range = read_trailer(buf, SEGMENT_MAGIC, HEADER_LEN).map_err(|e| trailer_err(e, &name))?;
+        let footer_range =
+            read_trailer(buf, SEGMENT_MAGIC, HEADER_LEN).map_err(|e| trailer_err(e, &name))?;
         check_header(buf, SEGMENT_MAGIC, &name)?;
 
         let footer_start = footer_range.start as u64;
@@ -73,24 +74,39 @@ impl<B: AsRef<[u8]>> SegmentReader<B> {
         let mut chunk_ranges = Vec::with_capacity(footer.row_groups.len());
         for rg in &footer.row_groups {
             if rg.rows > MAX_DECODE_ROWS as u64 {
-                return Err(malformed(&name, None, "row group rows exceeds MAX_DECODE_ROWS"));
+                return Err(malformed(
+                    &name,
+                    None,
+                    "row group rows exceeds MAX_DECODE_ROWS",
+                ));
             }
             let mut chunks = Vec::with_capacity(rg.chunks.len());
             let mut ranges = Vec::with_capacity(rg.chunks.len());
             for (chunk, field) in rg.chunks.iter().zip(&footer.fields) {
-                let encoding = Encoding::from_id(chunk.encoding).ok_or_else(|| FormatError::UnknownEncoding {
-                    segment: name.clone(),
-                    column: field.name.clone(),
-                    id: chunk.encoding,
-                })?;
+                let encoding =
+                    Encoding::from_id(chunk.encoding).ok_or_else(|| Error::UnknownEncoding {
+                        segment: name.clone(),
+                        column: field.name.clone(),
+                        id: chunk.encoding,
+                    })?;
                 if !encoding.applies_to(&field.ty) {
-                    return Err(malformed(&name, Some(field.name.as_str()), "encoding does not apply to column type"));
+                    return Err(malformed(
+                        &name,
+                        Some(field.name.as_str()),
+                        "encoding does not apply to column type",
+                    ));
                 }
                 chunk
                     .offset
                     .checked_add(chunk.len)
                     .filter(|&e| chunk.offset >= HEADER_LEN as u64 && e <= footer_start)
-                    .ok_or_else(|| malformed(&name, Some(field.name.as_str()), "chunk range out of bounds"))?;
+                    .ok_or_else(|| {
+                        malformed(
+                            &name,
+                            Some(field.name.as_str()),
+                            "chunk range out of bounds",
+                        )
+                    })?;
                 chunks.push(ChunkMeta {
                     encoding,
                     len: chunk.len,
@@ -100,15 +116,32 @@ impl<B: AsRef<[u8]>> SegmentReader<B> {
                 });
                 ranges.push((chunk.offset, chunk.len, chunk.crc));
             }
-            row_groups.push(RowGroupMeta { rows: rg.rows, chunks });
+            row_groups.push(RowGroupMeta {
+                rows: rg.rows,
+                chunks,
+            });
             chunk_ranges.push(ranges);
         }
 
         let body = HEADER_LEN as u64..footer_start;
-        let indexes = resolve_entries(footer.indexes, &footer.fields, row_groups.len(), body, &name)?;
+        let indexes = resolve_entries(
+            footer.indexes,
+            &footer.fields,
+            row_groups.len(),
+            body,
+            &name,
+        )?;
         let footer_crc = crc32c(&buf[footer_range]);
 
-        Ok(SegmentReader { name, bytes, fields: footer.fields, row_groups, chunk_ranges, indexes, footer_crc })
+        Ok(Reader {
+            name,
+            bytes,
+            fields: footer.fields,
+            row_groups,
+            chunk_ranges,
+            indexes,
+            footer_crc,
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -133,21 +166,21 @@ impl<B: AsRef<[u8]>> SegmentReader<B> {
 
     /// `Usage` for an out-of-range `row_group`/`column`. `CorruptChunk` if the stored CRC no
     /// longer matches; the CRC is per chunk, so a flipped byte never affects a sibling chunk.
-    pub fn read_column(&self, row_group: usize, column: usize) -> Result<Column, FormatError> {
+    pub fn read_column(&self, row_group: usize, column: usize) -> Result<Column, Error> {
         let rg_meta = self
             .row_groups
             .get(row_group)
-            .ok_or_else(|| FormatError::Usage(format!("row group {row_group} out of range")))?;
+            .ok_or_else(|| Error::Usage(format!("row group {row_group} out of range")))?;
         let &(offset, len, crc) = self
             .chunk_ranges
             .get(row_group)
             .and_then(|ranges| ranges.get(column))
-            .ok_or_else(|| FormatError::Usage(format!("column {column} out of range")))?;
+            .ok_or_else(|| Error::Usage(format!("column {column} out of range")))?;
 
         let buf = self.bytes.as_ref();
         let bytes = &buf[offset as usize..(offset + len) as usize];
         if crc32c(bytes) != crc {
-            return Err(FormatError::CorruptChunk {
+            return Err(Error::CorruptChunk {
                 segment: self.name.clone(),
                 column: self.fields[column].name.clone(),
                 row_group,
@@ -158,21 +191,25 @@ impl<B: AsRef<[u8]>> SegmentReader<B> {
         let col = decode_column(&field.ty, rows, rg_meta.chunks[column].encoding.id(), bytes)
             .map_err(|e| e.at(&self.name, Some(field.name.as_str())))?;
         if col.len() != rows {
-            return Err(malformed(&self.name, Some(field.name.as_str()), "decoded length does not match row group rows"));
+            return Err(malformed(
+                &self.name,
+                Some(field.name.as_str()),
+                "decoded length does not match row group rows",
+            ));
         }
         Ok(col)
     }
 
     /// `Usage` for a bad projection (out-of-range or duplicate column), surfaced through
     /// `Batch::new`.
-    pub fn read_row_group(&self, row_group: usize, projection: &[usize]) -> Result<Batch, FormatError> {
+    pub fn read_row_group(&self, row_group: usize, projection: &[usize]) -> Result<Batch, Error> {
         let mut fields = Vec::with_capacity(projection.len());
         let mut columns = Vec::with_capacity(projection.len());
         for &column in projection {
             columns.push(self.read_column(row_group, column)?);
             fields.push(self.fields[column].clone());
         }
-        Batch::new(fields, columns).map_err(|e| FormatError::Usage(e.to_string()))
+        Batch::new(fields, columns).map_err(|e| Error::Usage(e.to_string()))
     }
 
     pub fn indexes(&self) -> &[IndexEntry] {
@@ -180,7 +217,7 @@ impl<B: AsRef<[u8]>> SegmentReader<B> {
     }
 
     /// `CorruptIndex` if the stored CRC no longer matches; otherwise `index::load`.
-    pub fn load_index(&self, entry: &IndexEntry) -> Result<SkipIndex, FormatError> {
+    pub fn load_index(&self, entry: &IndexEntry) -> Result<SkipIndex, Error> {
         load_entry(self.bytes.as_ref(), entry, &self.fields, &self.name)
     }
 }
@@ -193,14 +230,18 @@ pub(crate) fn resolve_entries(
     row_groups: usize,
     body: std::ops::Range<u64>,
     segment: &str,
-) -> Result<Vec<IndexEntry>, FormatError> {
+) -> Result<Vec<IndexEntry>, Error> {
     let mut out = Vec::with_capacity(raw.len());
     for e in raw {
         let Some(kind) = IndexKind::from_id(e.kind) else {
             continue;
         };
         if e.row_group.is_some_and(|rg| rg >= row_groups) {
-            return Err(malformed(segment, None, "index entry row group out of range"));
+            return Err(malformed(
+                segment,
+                None,
+                "index entry row group out of range",
+            ));
         }
         if e.columns.is_empty() {
             return Err(malformed(segment, None, "index entry has no columns"));
@@ -210,25 +251,41 @@ pub(crate) fn resolve_entries(
                 return Err(malformed(segment, None, "index entry column out of range"));
             };
             if !kind.applies_to(&field.ty) {
-                return Err(malformed(segment, None, "index kind does not apply to column type"));
+                return Err(malformed(
+                    segment,
+                    None,
+                    "index kind does not apply to column type",
+                ));
             }
         }
         e.offset
             .checked_add(e.len)
             .filter(|&end| e.offset >= body.start && end <= body.end)
             .ok_or_else(|| malformed(segment, None, "index entry range out of bounds"))?;
-        out.push(IndexEntry { kind, row_group: e.row_group, columns: e.columns, offset: e.offset, len: e.len, crc: e.crc });
+        out.push(IndexEntry {
+            kind,
+            row_group: e.row_group,
+            columns: e.columns,
+            offset: e.offset,
+            len: e.len,
+            crc: e.crc,
+        });
     }
     Ok(out)
 }
 
 /// Shared with `idx.rs`: loads and CRC-checks one index entry's blob, naming its first
 /// column on either failure.
-pub(crate) fn load_entry(bytes: &[u8], entry: &IndexEntry, fields: &[Field], segment: &str) -> Result<SkipIndex, FormatError> {
+pub(crate) fn load_entry(
+    bytes: &[u8],
+    entry: &IndexEntry,
+    fields: &[Field],
+    segment: &str,
+) -> Result<SkipIndex, Error> {
     let field = &fields[entry.columns[0]];
     let blob = &bytes[entry.offset as usize..(entry.offset + entry.len) as usize];
     if crc32c(blob) != entry.crc {
-        return Err(FormatError::CorruptIndex {
+        return Err(Error::CorruptIndex {
             segment: segment.to_string(),
             column: field.name.clone(),
             kind: entry.kind,
@@ -238,30 +295,48 @@ pub(crate) fn load_entry(bytes: &[u8], entry: &IndexEntry, fields: &[Field], seg
 }
 
 /// Shared with `idx.rs`: both file kinds start with `magic (6) + FORMAT_VERSION (2)`.
-pub(crate) fn check_header(buf: &[u8], magic: [u8; 6], name: &str) -> Result<(), FormatError> {
+pub(crate) fn check_header(buf: &[u8], magic: [u8; 6], name: &str) -> Result<(), Error> {
     let found: [u8; 6] = buf[..6].try_into().unwrap();
     if found != magic {
-        return Err(FormatError::BadMagic { segment: name.to_string() });
+        return Err(Error::BadMagic {
+            segment: name.to_string(),
+        });
     }
     let version = u16::from_le_bytes(buf[6..8].try_into().unwrap());
     if version > FORMAT_VERSION {
-        return Err(FormatError::UnsupportedVersion { segment: name.to_string(), version });
+        return Err(Error::UnsupportedVersion {
+            segment: name.to_string(),
+            version,
+        });
     }
     Ok(())
 }
 
 /// Shared with `idx.rs`: lifts a trailer-framing failure to the public error.
-pub(crate) fn trailer_err(e: TrailerError, segment: &str) -> FormatError {
+pub(crate) fn trailer_err(e: TrailerError, segment: &str) -> Error {
     match e {
-        TrailerError::BadMagic => FormatError::BadMagic { segment: segment.to_string() },
-        TrailerError::UnsupportedVersion(version) => FormatError::UnsupportedVersion { segment: segment.to_string(), version },
-        TrailerError::Truncated => FormatError::Truncated { segment: segment.to_string() },
-        TrailerError::CorruptFooter => FormatError::CorruptFooter { segment: segment.to_string() },
+        TrailerError::BadMagic => Error::BadMagic {
+            segment: segment.to_string(),
+        },
+        TrailerError::UnsupportedVersion(version) => Error::UnsupportedVersion {
+            segment: segment.to_string(),
+            version,
+        },
+        TrailerError::Truncated => Error::Truncated {
+            segment: segment.to_string(),
+        },
+        TrailerError::CorruptFooter => Error::CorruptFooter {
+            segment: segment.to_string(),
+        },
     }
 }
 
-fn malformed(segment: &str, column: Option<&str>, detail: &str) -> FormatError {
-    FormatError::Malformed { segment: segment.to_string(), column: column.map(str::to_string), detail: detail.to_string() }
+fn malformed(segment: &str, column: Option<&str>, detail: &str) -> Error {
+    Error::Malformed {
+        segment: segment.to_string(),
+        column: column.map(str::to_string),
+        detail: detail.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -269,17 +344,23 @@ mod tests {
     use super::*;
     use crate::types::DataType;
 
+    use super::super::IDX_MAGIC;
     use super::super::directory::{decode_directory, encode_directory};
     use super::super::footer::{encode_footer, encode_footer_with_raw_type, write_trailer};
     use super::super::idx::{IdxReader, IdxWriter};
     use super::super::wire::{Cursor, Sink};
-    use super::super::writer::{SegmentWriter, WriterOptions};
-    use super::super::IDX_MAGIC;
+    use super::super::writer::{Writer, WriterOptions};
 
     fn sample_fields() -> Vec<Field> {
         vec![
-            Field { name: "a".to_string(), ty: DataType::Int64 },
-            Field { name: "s".to_string(), ty: DataType::String },
+            Field {
+                name: "a".to_string(),
+                ty: DataType::Int64,
+            },
+            Field {
+                name: "s".to_string(),
+                ty: DataType::String,
+            },
         ]
     }
 
@@ -315,7 +396,7 @@ mod tests {
             pins: Vec::new(),
             indexes: vec![("a".to_string(), IndexKind::Bloom)],
         };
-        let mut w = SegmentWriter::new(Vec::new(), sample_fields(), opts).unwrap();
+        let mut w = Writer::new(Vec::new(), sample_fields(), opts).unwrap();
         for b in batches {
             w.push(b).unwrap();
         }
@@ -329,14 +410,24 @@ mod tests {
 
     /// `bytes[..footer_start]` followed by a freshly-framed `footer` (recomputes the CRC).
     fn reframe(bytes: &[u8], footer: Vec<u8>) -> Vec<u8> {
-        let footer_start = read_trailer(bytes, SEGMENT_MAGIC, HEADER_LEN).unwrap().start;
+        let footer_start = read_trailer(bytes, SEGMENT_MAGIC, HEADER_LEN)
+            .unwrap()
+            .start;
         let mut out = bytes[..footer_start].to_vec();
         write_trailer(&mut out, SEGMENT_MAGIC, &footer);
         out
     }
 
     fn garbage_entry(kind: u64) -> RawIndexEntry {
-        RawIndexEntry { kind, row_group: Some(99), columns: vec![42], offset: 0, len: u64::MAX, crc: 0, params: vec![1, 2, 3] }
+        RawIndexEntry {
+            kind,
+            row_group: Some(99),
+            columns: vec![42],
+            offset: 0,
+            len: u64::MAX,
+            crc: 0,
+            params: vec![1, 2, 3],
+        }
     }
 
     #[test]
@@ -347,8 +438,8 @@ mod tests {
 
         let bad = encode_footer_with_raw_type(&footer, 1, 999, &[]);
         let patched = reframe(&bytes, bad);
-        let err = SegmentReader::open("seg1", patched).unwrap_err();
-        assert!(matches!(&err, FormatError::UnknownTypeId { column, id: 999, .. } if column == "s"));
+        let err = Reader::open("seg1", patched).unwrap_err();
+        assert!(matches!(&err, Error::UnknownTypeId { column, id: 999, .. } if column == "s"));
         let msg = err.to_string();
         assert!(msg.contains("seg1"));
         assert!(msg.contains('s'));
@@ -357,9 +448,12 @@ mod tests {
         // Control: the real STRING id (6) still opens, and column s round-trips.
         let good = encode_footer_with_raw_type(&footer, 1, 6, &[]);
         let patched_good = reframe(&bytes, good);
-        let control = SegmentReader::open("seg1", bytes.clone()).unwrap();
-        let reader = SegmentReader::open("seg1", patched_good).unwrap();
-        assert_eq!(reader.read_column(0, 1).unwrap(), control.read_column(0, 1).unwrap());
+        let control = Reader::open("seg1", bytes.clone()).unwrap();
+        let reader = Reader::open("seg1", patched_good).unwrap();
+        assert_eq!(
+            reader.read_column(0, 1).unwrap(),
+            control.read_column(0, 1).unwrap()
+        );
     }
 
     #[test]
@@ -370,7 +464,7 @@ mod tests {
         footer.indexes.push(garbage_entry(0x7FFF));
         let patched = reframe(&bytes, encode_footer(&footer));
 
-        let reader = SegmentReader::open("seg1", patched).unwrap();
+        let reader = Reader::open("seg1", patched).unwrap();
         assert_eq!(reader.indexes().len(), 3);
         for entry in reader.indexes() {
             assert_eq!(entry.kind, IndexKind::Bloom);
@@ -388,14 +482,14 @@ mod tests {
         let mut footer2 = decode_footer(&bytes[range2]).unwrap();
         footer2.indexes.push(garbage_entry(1));
         let patched2 = reframe(&bytes, encode_footer(&footer2));
-        let err = SegmentReader::open("seg1", patched2).unwrap_err();
-        assert!(matches!(err, FormatError::Malformed { .. }));
+        let err = Reader::open("seg1", patched2).unwrap_err();
+        assert!(matches!(err, Error::Malformed { .. }));
     }
 
     #[test]
     fn idx_unknown_index_kind_is_skipped() {
         let (bytes, _batches) = sample_segment();
-        let seg = SegmentReader::open("seg1", bytes).unwrap();
+        let seg = Reader::open("seg1", bytes).unwrap();
         let idx_bytes = IdxWriter::build(&seg, &[(1, IndexKind::Ngram)]).unwrap();
 
         let range = read_trailer(&idx_bytes, IDX_MAGIC, 12).unwrap();
@@ -426,16 +520,16 @@ mod tests {
 
         let mut patched = bytes.clone();
         patched[chunk.offset as usize] ^= 0xFF;
-        let reader = SegmentReader::open("seg1", patched).unwrap();
+        let reader = Reader::open("seg1", patched).unwrap();
         let err = reader.read_column(1, 1).unwrap_err();
-        assert!(matches!(&err, FormatError::CorruptChunk { column, row_group: 1, .. } if column == "s"));
+        assert!(matches!(&err, Error::CorruptChunk { column, row_group: 1, .. } if column == "s"));
         assert!(reader.read_column(1, 0).is_ok());
         assert!(reader.read_column(0, 1).is_ok());
 
         let mut footer_flip = bytes.clone();
         footer_flip[footer_start] ^= 0xFF;
-        let err = SegmentReader::open("seg1", footer_flip).unwrap_err();
-        assert!(matches!(err, FormatError::CorruptFooter { .. }));
+        let err = Reader::open("seg1", footer_flip).unwrap_err();
+        assert!(matches!(err, Error::CorruptFooter { .. }));
     }
 
     #[test]
@@ -447,26 +541,26 @@ mod tests {
         let mut unknown = footer.clone();
         unknown.row_groups[0].chunks[0].encoding = 99;
         let patched = reframe(&bytes, encode_footer(&unknown));
-        let err = SegmentReader::open("seg1", patched).unwrap_err();
-        assert!(matches!(&err, FormatError::UnknownEncoding { column, id: 99, .. } if column == "a"));
+        let err = Reader::open("seg1", patched).unwrap_err();
+        assert!(matches!(&err, Error::UnknownEncoding { column, id: 99, .. } if column == "a"));
 
         let mut inapplicable = footer;
         inapplicable.row_groups[0].chunks[0].encoding = Encoding::Xor.id();
         let patched2 = reframe(&bytes, encode_footer(&inapplicable));
-        let err2 = SegmentReader::open("seg1", patched2).unwrap_err();
-        assert!(matches!(err2, FormatError::Malformed { .. }));
+        let err2 = Reader::open("seg1", patched2).unwrap_err();
+        assert!(matches!(err2, Error::Malformed { .. }));
     }
 
     #[test]
     fn idx_reader_open_against_a_different_segment_is_idx_mismatch() {
         let (bytes_a, _) = sample_segment();
-        let seg_a = SegmentReader::open("a", bytes_a).unwrap();
+        let seg_a = Reader::open("a", bytes_a).unwrap();
         let idx_bytes = IdxWriter::build(&seg_a, &[(0, IndexKind::Bloom)]).unwrap();
 
         let bytes_b = write_segment(&sample_batches(1000, "t"));
-        let seg_b = SegmentReader::open("b", bytes_b).unwrap();
+        let seg_b = Reader::open("b", bytes_b).unwrap();
 
         let err = IdxReader::open("a.idx", idx_bytes, &seg_b).unwrap_err();
-        assert!(matches!(err, FormatError::IdxMismatch { .. }));
+        assert!(matches!(err, Error::IdxMismatch { .. }));
     }
 }

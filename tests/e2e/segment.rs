@@ -1,4 +1,4 @@
-//! U10 (adelie-44e): public-API-only tests for `adelie::format` (SPEC §5, D0008) — round
+//! U10 (adelie-44e): public-API-only tests for `adelie::segment` (SPEC §5, D0008) — round
 //! trip across row groups, stats, determinism, index pruning, corruption and fuzzing.
 
 use std::cmp::Ordering;
@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::ops::Range;
 
 use adelie::exec::{Batch, Column, Field, coalesce_companion};
-use adelie::format::*;
+use adelie::segment::*;
 use adelie::types::{DataType, Decimal, Ip, Value, companion_name, total_cmp};
 use adelie_harness::rng::SplitMix64;
 
@@ -16,20 +16,62 @@ const TS_BASE_NS: i64 = 1_700_000_000_000_000_000;
 
 fn fields() -> Vec<Field> {
     vec![
-        Field { name: "b".to_string(), ty: DataType::Bool },
-        Field { name: "i".to_string(), ty: DataType::Int64 },
-        Field { name: "u".to_string(), ty: DataType::UInt64 },
-        Field { name: "f".to_string(), ty: DataType::Float64 },
-        Field { name: "d".to_string(), ty: DataType::decimal(18, 4).unwrap() },
-        Field { name: "s".to_string(), ty: DataType::String },
-        Field { name: "bytes".to_string(), ty: DataType::Bytes },
-        Field { name: "ts".to_string(), ty: DataType::Timestamp },
-        Field { name: "date".to_string(), ty: DataType::Date },
-        Field { name: "id".to_string(), ty: DataType::Uuid },
-        Field { name: "ip".to_string(), ty: DataType::Ip },
-        Field { name: "tags".to_string(), ty: DataType::list(DataType::String).unwrap() },
-        Field { name: "x".to_string(), ty: DataType::Int64 },
-        Field { name: companion_name("x"), ty: DataType::String },
+        Field {
+            name: "b".to_string(),
+            ty: DataType::Bool,
+        },
+        Field {
+            name: "i".to_string(),
+            ty: DataType::Int64,
+        },
+        Field {
+            name: "u".to_string(),
+            ty: DataType::UInt64,
+        },
+        Field {
+            name: "f".to_string(),
+            ty: DataType::Float64,
+        },
+        Field {
+            name: "d".to_string(),
+            ty: DataType::decimal(18, 4).unwrap(),
+        },
+        Field {
+            name: "s".to_string(),
+            ty: DataType::String,
+        },
+        Field {
+            name: "bytes".to_string(),
+            ty: DataType::Bytes,
+        },
+        Field {
+            name: "ts".to_string(),
+            ty: DataType::Timestamp,
+        },
+        Field {
+            name: "date".to_string(),
+            ty: DataType::Date,
+        },
+        Field {
+            name: "id".to_string(),
+            ty: DataType::Uuid,
+        },
+        Field {
+            name: "ip".to_string(),
+            ty: DataType::Ip,
+        },
+        Field {
+            name: "tags".to_string(),
+            ty: DataType::list(DataType::String).unwrap(),
+        },
+        Field {
+            name: "x".to_string(),
+            ty: DataType::Int64,
+        },
+        Field {
+            name: companion_name("x"),
+            ty: DataType::String,
+        },
     ]
 }
 
@@ -66,7 +108,11 @@ fn gen_float(rng: &mut SplitMix64) -> f64 {
 /// Stays well under `DECIMAL(18,4)`'s bound (`|unscaled| < 10^18`) with room to spare.
 fn gen_decimal(rng: &mut SplitMix64) -> Value {
     let magnitude = rng.range(0, 999_999_999_999_999_999) as i128;
-    let unscaled = if rng.next_u64() % 2 == 0 { magnitude } else { -magnitude };
+    let unscaled = if rng.next_u64() % 2 == 0 {
+        magnitude
+    } else {
+        -magnitude
+    };
     Value::Decimal(Decimal::new(unscaled, 4).unwrap())
 }
 
@@ -79,15 +125,25 @@ fn gen_uuid(rng: &mut SplitMix64) -> [u8; 16] {
 }
 
 fn gen_ip(rng: &mut SplitMix64) -> Ip {
-    let octets: [u8; 4] =
-        [rng.range(0, 256) as u8, rng.range(0, 256) as u8, rng.range(0, 256) as u8, rng.range(0, 256) as u8];
+    let octets: [u8; 4] = [
+        rng.range(0, 256) as u8,
+        rng.range(0, 256) as u8,
+        rng.range(0, 256) as u8,
+        rng.range(0, 256) as u8,
+    ];
     Ip::from(IpAddr::from(octets))
 }
 
 fn gen_tags(rng: &mut SplitMix64) -> Vec<Value> {
     let len = rng.range(0, 4);
     (0..len)
-        .map(|_| if rng.range(0, 10) == 0 { Value::Null } else { Value::String(gen_string(rng)) })
+        .map(|_| {
+            if rng.range(0, 10) == 0 {
+                Value::Null
+            } else {
+                Value::String(gen_string(rng))
+            }
+        })
         .collect()
 }
 
@@ -101,23 +157,67 @@ fn batch(rng: &mut SplitMix64, rows: usize) -> Batch {
     let (mut x, mut xs) = (Vec::new(), Vec::new());
 
     for r in 0..rows {
-        b.push(if null_roll(rng) { Value::Null } else { Value::Bool(rng.next_u64() % 2 == 0) });
-        i.push(if null_roll(rng) { Value::Null } else { Value::Int64(rng.next_u64() as i64) });
-        u.push(if null_roll(rng) { Value::Null } else { Value::UInt64(rng.next_u64()) });
-        f.push(if null_roll(rng) { Value::Null } else { Value::Float64(gen_float(rng)) });
-        d.push(if null_roll(rng) { Value::Null } else { gen_decimal(rng) });
-        s.push(if null_roll(rng) { Value::Null } else { Value::String(gen_string(rng)) });
-        by.push(if null_roll(rng) { Value::Null } else { Value::Bytes(gen_bytes(rng)) });
+        b.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Bool(rng.next_u64() % 2 == 0)
+        });
+        i.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Int64(rng.next_u64() as i64)
+        });
+        u.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::UInt64(rng.next_u64())
+        });
+        f.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Float64(gen_float(rng))
+        });
+        d.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            gen_decimal(rng)
+        });
+        s.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::String(gen_string(rng))
+        });
+        by.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Bytes(gen_bytes(rng))
+        });
         let jitter = rng.range(0, 6_000_001) as i64 - 3_000_000;
         ts.push(if null_roll(rng) {
             Value::Null
         } else {
             Value::Timestamp(TS_BASE_NS + r as i64 * 1_000_000_000 + jitter)
         });
-        date.push(if null_roll(rng) { Value::Null } else { Value::Date(rng.range(0, 40_000) as i32 - 20_000) });
-        id.push(if null_roll(rng) { Value::Null } else { Value::Uuid(gen_uuid(rng)) });
-        ip.push(if null_roll(rng) { Value::Null } else { Value::Ip(gen_ip(rng)) });
-        tags.push(if null_roll(rng) { Value::Null } else { Value::List(gen_tags(rng)) });
+        date.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Date(rng.range(0, 40_000) as i32 - 20_000)
+        });
+        id.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Uuid(gen_uuid(rng))
+        });
+        ip.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::Ip(gen_ip(rng))
+        });
+        tags.push(if null_roll(rng) {
+            Value::Null
+        } else {
+            Value::List(gen_tags(rng))
+        });
         if rng.next_u64() % 2 == 0 {
             x.push(Value::Int64(rng.next_u64() as i64));
             xs.push(Value::Null);
@@ -180,7 +280,12 @@ fn row_index_map(batches: &[Batch]) -> Vec<(usize, usize)> {
     out
 }
 
-fn concat_values(batches: &[Batch], col: usize, range: Range<usize>, index: &[(usize, usize)]) -> Vec<Value> {
+fn concat_values(
+    batches: &[Batch],
+    col: usize,
+    range: Range<usize>,
+    index: &[(usize, usize)],
+) -> Vec<Value> {
     range
         .map(|g| {
             let (bi, ri) = index[g];
@@ -189,7 +294,7 @@ fn concat_values(batches: &[Batch], col: usize, range: Range<usize>, index: &[(u
         .collect()
 }
 
-/// Mirrors `SegmentWriter`'s own flush rule (SPEC §5): a row group is flushed, taking every
+/// Mirrors `Writer`'s own flush rule (SPEC §5): a row group is flushed, taking every
 /// pending row, as soon as pushing crosses `row_group_rows`; `finish` flushes whatever remains.
 fn expected_row_group_ranges(push_sizes: &[usize], row_group_rows: usize) -> Vec<Range<usize>> {
     let mut out = Vec::new();
@@ -210,14 +315,14 @@ fn expected_row_group_ranges(push_sizes: &[usize], row_group_rows: usize) -> Vec
 }
 
 fn write_segment(flds: &[Field], batches: &[Batch], opts: WriterOptions) -> Vec<u8> {
-    let mut w = SegmentWriter::new(Vec::new(), flds.to_vec(), opts).unwrap();
+    let mut w = Writer::new(Vec::new(), flds.to_vec(), opts).unwrap();
     for b in batches {
         w.push(b).unwrap();
     }
     w.finish().unwrap().0
 }
 
-fn read_full_column(seg: &SegmentReader<Vec<u8>>, col: usize, flds: &[Field]) -> Column {
+fn read_full_column(seg: &Reader<Vec<u8>>, col: usize, flds: &[Field]) -> Column {
     let mut values = Vec::new();
     for rg in 0..seg.row_groups().len() {
         let c = seg.read_column(rg, col).unwrap();
@@ -238,16 +343,23 @@ struct RoundTripFixture {
     index: Vec<(usize, usize)>,
     ranges: Vec<Range<usize>>,
     bytes: Vec<u8>,
-    meta: SegmentMeta,
+    meta: Meta,
     rows_before_finish: u64,
 }
 
-fn build_round_trip_fixture(seed: u64, row_group_rows: usize, push_sizes: &[usize]) -> RoundTripFixture {
+fn build_round_trip_fixture(
+    seed: u64,
+    row_group_rows: usize,
+    push_sizes: &[usize],
+) -> RoundTripFixture {
     let flds = fields();
     let mut rng = SplitMix64::new(seed);
     let batches: Vec<Batch> = push_sizes.iter().map(|&n| batch(&mut rng, n)).collect();
-    let opts = WriterOptions { row_group_rows, ..Default::default() };
-    let mut w = SegmentWriter::new(Vec::new(), flds.clone(), opts).unwrap();
+    let opts = WriterOptions {
+        row_group_rows,
+        ..Default::default()
+    };
+    let mut w = Writer::new(Vec::new(), flds.clone(), opts).unwrap();
     for b in &batches {
         w.push(b).unwrap();
     }
@@ -255,7 +367,15 @@ fn build_round_trip_fixture(seed: u64, row_group_rows: usize, push_sizes: &[usiz
     let (bytes, meta) = w.finish().unwrap();
     let index = row_index_map(&batches);
     let ranges = expected_row_group_ranges(push_sizes, row_group_rows);
-    RoundTripFixture { flds, batches, index, ranges, bytes, meta, rows_before_finish }
+    RoundTripFixture {
+        flds,
+        batches,
+        index,
+        ranges,
+        bytes,
+        meta,
+        rows_before_finish,
+    }
 }
 
 // Criterion 1: round trip across several row groups.
@@ -266,7 +386,7 @@ fn round_trip_across_several_row_groups() {
     assert_eq!(fx.rows_before_finish, 500);
     assert_eq!(fx.meta.rows, 500);
 
-    let seg = SegmentReader::open("e2e", fx.bytes.clone()).unwrap();
+    let seg = Reader::open("e2e", fx.bytes.clone()).unwrap();
     assert_eq!(seg.rows(), 500);
     assert_eq!(seg.fields(), fx.flds.as_slice());
 
@@ -274,7 +394,10 @@ fn round_trip_across_several_row_groups() {
     assert_eq!(rgs.len(), fx.ranges.len());
     assert_eq!(rgs.iter().map(|rg| rg.rows).sum::<u64>(), 500);
     for rg in &rgs[..rgs.len() - 1] {
-        assert!(rg.rows >= 100, "every row group but the last has >= row_group_rows rows");
+        assert!(
+            rg.rows >= 100,
+            "every row group but the last has >= row_group_rows rows"
+        );
     }
 
     let projection: Vec<usize> = (0..fx.flds.len()).collect();
@@ -284,11 +407,22 @@ fn round_trip_across_several_row_groups() {
         assert_eq!(read_batch.rows(), range.len());
         assert_eq!(read_batch.fields(), fx.flds.as_slice());
         for (col, field) in fx.flds.iter().enumerate() {
-            let want =
-                Column::from_values(&field.ty, &concat_values(&fx.batches, col, range.clone(), &fx.index)).unwrap();
-            assert!(columns_equal(read_batch.column(col), &want), "row group {rg_idx} column {}", field.name);
+            let want = Column::from_values(
+                &field.ty,
+                &concat_values(&fx.batches, col, range.clone(), &fx.index),
+            )
+            .unwrap();
+            assert!(
+                columns_equal(read_batch.column(col), &want),
+                "row group {rg_idx} column {}",
+                field.name
+            );
             let direct = seg.read_column(rg_idx, col).unwrap();
-            assert!(columns_equal(&direct, &want), "row group {rg_idx} column {} (read_column)", field.name);
+            assert!(
+                columns_equal(&direct, &want),
+                "row group {rg_idx} column {} (read_column)",
+                field.name
+            );
         }
     }
 }
@@ -298,32 +432,62 @@ fn round_trip_across_several_row_groups() {
 fn stats_match_column_stats_per_row_group_and_for_the_whole_segment() {
     let sizes = push_sizes_500();
     let fx = build_round_trip_fixture(0xA11CE, 100, &sizes);
-    let seg = SegmentReader::open("e2e", fx.bytes.clone()).unwrap();
+    let seg = Reader::open("e2e", fx.bytes.clone()).unwrap();
 
     for (rg_idx, range) in fx.ranges.iter().enumerate() {
         let rg_meta = &seg.row_groups()[rg_idx];
         for (col, field) in fx.flds.iter().enumerate() {
-            let want = Column::from_values(&field.ty, &concat_values(&fx.batches, col, range.clone(), &fx.index))
-                .unwrap()
-                .stats();
+            let want = Column::from_values(
+                &field.ty,
+                &concat_values(&fx.batches, col, range.clone(), &fx.index),
+            )
+            .unwrap()
+            .stats();
             let chunk = &rg_meta.chunks[col];
-            assert_eq!(chunk.null_count, want.null_count as u64, "column {}", field.name);
+            assert_eq!(
+                chunk.null_count, want.null_count as u64,
+                "column {}",
+                field.name
+            );
             if matches!(field.ty, DataType::List(_)) {
-                assert!(chunk.min.is_none() && chunk.max.is_none(), "LIST stats are always absent");
+                assert!(
+                    chunk.min.is_none() && chunk.max.is_none(),
+                    "LIST stats are always absent"
+                );
             } else {
-                assert!(value_opt_eq(&chunk.min, &want.min), "column {}: min mismatch", field.name);
-                assert!(value_opt_eq(&chunk.max, &want.max), "column {}: max mismatch", field.name);
+                assert!(
+                    value_opt_eq(&chunk.min, &want.min),
+                    "column {}: min mismatch",
+                    field.name
+                );
+                assert!(
+                    value_opt_eq(&chunk.max, &want.max),
+                    "column {}: max mismatch",
+                    field.name
+                );
             }
         }
     }
 
     for (col, field) in fx.flds.iter().enumerate() {
-        let want =
-            Column::from_values(&field.ty, &concat_values(&fx.batches, col, 0..500, &fx.index)).unwrap().stats();
+        let want = Column::from_values(
+            &field.ty,
+            &concat_values(&fx.batches, col, 0..500, &fx.index),
+        )
+        .unwrap()
+        .stats();
         let got = &fx.meta.columns[col];
         assert_eq!(got.null_count, want.null_count, "column {}", field.name);
-        assert!(value_opt_eq(&got.min, &want.min), "column {}: segment min mismatch", field.name);
-        assert!(value_opt_eq(&got.max, &want.max), "column {}: segment max mismatch", field.name);
+        assert!(
+            value_opt_eq(&got.min, &want.min),
+            "column {}: segment min mismatch",
+            field.name
+        );
+        assert!(
+            value_opt_eq(&got.max, &want.max),
+            "column {}: segment max mismatch",
+            field.name
+        );
     }
 }
 
@@ -361,9 +525,12 @@ fn determinism_same_seed_gives_identical_bytes_and_a_control_flip_differs() {
 
     let out1 = write_segment(&flds, &batches, opts.clone());
     let out2 = write_segment(&flds, &batches, opts.clone());
-    assert_eq!(out1, out2, "two writes of the same seeded batches must be byte-identical");
+    assert_eq!(
+        out1, out2,
+        "two writes of the same seeded batches must be byte-identical"
+    );
 
-    let seg = SegmentReader::open("e2e", out1.clone()).unwrap();
+    let seg = Reader::open("e2e", out1.clone()).unwrap();
     let requests = [
         (field_index("s", &flds), IndexKind::Bloom),
         (field_index("s", &flds), IndexKind::ValueSet),
@@ -372,14 +539,25 @@ fn determinism_same_seed_gives_identical_bytes_and_a_control_flip_differs() {
     ];
     let idx1 = IdxWriter::build(&seg, &requests).unwrap();
     let idx2 = IdxWriter::build(&seg, &requests).unwrap();
-    assert_eq!(idx1, idx2, "IdxWriter::build run twice must be byte-identical");
+    assert_eq!(
+        idx1, idx2,
+        "IdxWriter::build run twice must be byte-identical"
+    );
 
     let mutated = flip_one_value(&flds, &batches, "i");
     let out3 = write_segment(&flds, &mutated, opts);
-    assert_ne!(out1, out3, "changing one value in one row must change the bytes");
+    assert_ne!(
+        out1, out3,
+        "changing one value in one row must change the bytes"
+    );
 }
 
-fn find_index<'a>(entries: &'a [IndexEntry], rg: usize, kind: IndexKind, col: usize) -> &'a IndexEntry {
+fn find_index<'a>(
+    entries: &'a [IndexEntry],
+    rg: usize,
+    kind: IndexKind,
+    col: usize,
+) -> &'a IndexEntry {
     entries
         .iter()
         .find(|e| e.row_group == Some(rg) && e.kind == kind && e.columns == vec![col])
@@ -403,7 +581,7 @@ fn indexes_prune_known_values_and_reject_absent_ones() {
     let mut rng = SplitMix64::new(0x1DE5);
     let batches: Vec<Batch> = (0..6).map(|_| batch(&mut rng, 50)).collect();
     let bytes = write_segment(&flds, &batches, opts);
-    let seg = SegmentReader::open("e2e", bytes).unwrap();
+    let seg = Reader::open("e2e", bytes).unwrap();
 
     let s_idx = field_index("s", &flds);
     let id_idx = field_index("id", &flds);
@@ -418,19 +596,30 @@ fn indexes_prune_known_values_and_reject_absent_ones() {
             })
             .collect();
 
-        let vs = seg.load_index(find_index(seg.indexes(), rg, IndexKind::ValueSet, s_idx)).unwrap();
+        let vs = seg
+            .load_index(find_index(seg.indexes(), rg, IndexKind::ValueSet, s_idx))
+            .unwrap();
         for v in &present {
-            assert!(vs.might_contain(&Value::String(v.clone())), "row group {rg}: {v} should be in the value set");
+            assert!(
+                vs.might_contain(&Value::String(v.clone())),
+                "row group {rg}: {v} should be in the value set"
+            );
         }
         assert!(!vs.might_contain(&Value::String("absent-value".to_string())));
 
-        let ng = seg.load_index(find_index(seg.indexes(), rg, IndexKind::Ngram, s_idx)).unwrap();
+        let ng = seg
+            .load_index(find_index(seg.indexes(), rg, IndexKind::Ngram, s_idx))
+            .unwrap();
         assert!(!ng.might_contain_substring("zzzq"));
-        let sample = present.first().expect("row group has at least one non-null s value");
+        let sample = present
+            .first()
+            .expect("row group has at least one non-null s value");
         assert!(ng.might_contain_substring(&sample[..3]));
 
         let id_col = seg.read_column(rg, id_idx).unwrap();
-        let bloom = seg.load_index(find_index(seg.indexes(), rg, IndexKind::Bloom, id_idx)).unwrap();
+        let bloom = seg
+            .load_index(find_index(seg.indexes(), rg, IndexKind::Bloom, id_idx))
+            .unwrap();
         for i in 0..id_col.len() {
             if let Value::Uuid(u) = id_col.get(i) {
                 assert!(bloom.might_contain(&Value::Uuid(u)));
@@ -473,9 +662,12 @@ fn single_byte_flips_in_the_body_either_stay_ok_or_name_the_corrupt_chunk() {
 
     let body_start = header_len;
     let body_end = bytes.len() - 16 - footer_len(&bytes);
-    assert!(body_end > body_start, "a segment with rows has a non-empty body");
+    assert!(
+        body_end > body_start,
+        "a segment with rows has a non-empty body"
+    );
 
-    let reference = SegmentReader::open("e2e", bytes.clone()).unwrap();
+    let reference = Reader::open("e2e", bytes.clone()).unwrap();
     let mut flip_rng = SplitMix64::new(0xF11D);
     for _ in 0..50 {
         let pos = body_start + flip_rng.range(0, (body_end - body_start) as u64) as usize;
@@ -483,16 +675,19 @@ fn single_byte_flips_in_the_body_either_stay_ok_or_name_the_corrupt_chunk() {
         let mut corrupted = bytes.clone();
         corrupted[pos] ^= bit;
 
-        let seg = SegmentReader::open("e2e", corrupted).expect("a body flip never breaks the footer");
+        let seg = Reader::open("e2e", corrupted).expect("a body flip never breaks the footer");
         let mut corrupt_count = 0;
         for rg in 0..seg.row_groups().len() {
             for col in 0..flds.len() {
                 match seg.read_column(rg, col) {
                     Ok(got) => {
                         let want = reference.read_column(rg, col).unwrap();
-                        assert!(columns_equal(&got, &want), "an unaffected chunk must decode to the original data");
+                        assert!(
+                            columns_equal(&got, &want),
+                            "an unaffected chunk must decode to the original data"
+                        );
                     }
-                    Err(e @ FormatError::CorruptChunk { .. }) => {
+                    Err(e @ Error::CorruptChunk { .. }) => {
                         let msg = e.to_string();
                         assert!(msg.contains("e2e"), "error should name the segment: {msg}");
                         assert!(
@@ -505,7 +700,10 @@ fn single_byte_flips_in_the_body_either_stay_ok_or_name_the_corrupt_chunk() {
                 }
             }
         }
-        assert!(corrupt_count <= 1, "a single-byte flip corrupts at most one chunk, got {corrupt_count}");
+        assert!(
+            corrupt_count <= 1,
+            "a single-byte flip corrupts at most one chunk, got {corrupt_count}"
+        );
     }
 }
 
@@ -542,23 +740,30 @@ fn mutate_bytes(bytes: &[u8], rng: &mut SplitMix64) -> Vec<u8> {
 
 /// Whenever `open` succeeds the footer's own CRC has passed, so the schema and row-group
 /// shape are exactly the original; only body bytes (chunks, index blobs) may be corrupted.
-fn check_fuzzed_bytes(bytes: &[u8], reference: &SegmentReader<Vec<u8>>, flds: &[Field]) {
-    let Ok(seg) = SegmentReader::open("e2e", bytes.to_vec()) else {
+fn check_fuzzed_bytes(bytes: &[u8], reference: &Reader<Vec<u8>>, flds: &[Field]) {
+    let Ok(seg) = Reader::open("e2e", bytes.to_vec()) else {
         return;
     };
     let rg_count = seg.row_groups().len().min(reference.row_groups().len());
     for rg in 0..rg_count {
         for col in 0..flds.len() {
             if let Ok(got) = seg.read_column(rg, col) {
-                let want = reference.read_column(rg, col).expect("footer identical when open() succeeds");
-                assert!(columns_equal(&got, &want), "row group {rg} column {col} decoded to wrong data");
+                let want = reference
+                    .read_column(rg, col)
+                    .expect("footer identical when open() succeeds");
+                assert!(
+                    columns_equal(&got, &want),
+                    "row group {rg} column {col} decoded to wrong data"
+                );
             }
         }
     }
     let idx_count = seg.indexes().len().min(reference.indexes().len());
     for (i, entry) in seg.indexes().iter().enumerate().take(idx_count) {
         if let Ok(got) = seg.load_index(entry) {
-            let want = reference.load_index(&reference.indexes()[i]).expect("footer identical when open() succeeds");
+            let want = reference
+                .load_index(&reference.indexes()[i])
+                .expect("footer identical when open() succeeds");
             assert_eq!(got, want, "index {i} decoded to wrong data");
         }
     }
@@ -586,7 +791,7 @@ fn fuzzed_bytes_never_panic_and_never_decode_to_wrong_data() {
     let mut gen_rng = SplitMix64::new(0xFE55);
     let batches: Vec<Batch> = (0..5).map(|_| batch(&mut gen_rng, 37)).collect();
     let original = write_segment(&flds, &batches, opts);
-    let reference = SegmentReader::open("e2e", original.clone()).unwrap();
+    let reference = Reader::open("e2e", original.clone()).unwrap();
 
     for i in 0..iters {
         let seed = 0x5EED_0000_u64.wrapping_add(i as u64);
@@ -614,14 +819,28 @@ fn companion_columns_round_trip_and_coalesce_matches_the_input() {
 
     let mut rng = SplitMix64::new(0xC0FFEE);
     let batches: Vec<Batch> = (0..4).map(|_| batch(&mut rng, 37)).collect();
-    let bytes = write_segment(&flds, &batches, WriterOptions { row_group_rows: 50, ..Default::default() });
-    let seg = SegmentReader::open("e2e", bytes).unwrap();
+    let bytes = write_segment(
+        &flds,
+        &batches,
+        WriterOptions {
+            row_group_rows: 50,
+            ..Default::default()
+        },
+    );
+    let seg = Reader::open("e2e", bytes).unwrap();
 
     let index = row_index_map(&batches);
     let total = batches.iter().map(Batch::rows).sum::<usize>();
-    let input_x = Column::from_values(&flds[x_idx].ty, &concat_values(&batches, x_idx, 0..total, &index)).unwrap();
-    let input_xs =
-        Column::from_values(&flds[xs_idx].ty, &concat_values(&batches, xs_idx, 0..total, &index)).unwrap();
+    let input_x = Column::from_values(
+        &flds[x_idx].ty,
+        &concat_values(&batches, x_idx, 0..total, &index),
+    )
+    .unwrap();
+    let input_xs = Column::from_values(
+        &flds[xs_idx].ty,
+        &concat_values(&batches, xs_idx, 0..total, &index),
+    )
+    .unwrap();
     let input_coalesced = coalesce_companion(&input_x, &input_xs).unwrap();
 
     let got_x = read_full_column(&seg, x_idx, &flds);
@@ -639,12 +858,19 @@ fn writing_through_a_buffered_file_round_trips() {
     let mut rng = SplitMix64::new(0xF11E);
     let batches: Vec<Batch> = (0..3).map(|_| batch(&mut rng, 20)).collect();
 
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let path = std::env::temp_dir().join(format!("adelie-e2e-format-{}-{nanos}.seg", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "adelie-e2e-format-{}-{nanos}.seg",
+        std::process::id()
+    ));
 
     {
         let file = std::fs::File::create(&path).unwrap();
-        let mut w = SegmentWriter::new(BufWriter::new(file), flds.clone(), WriterOptions::default()).unwrap();
+        let mut w =
+            Writer::new(BufWriter::new(file), flds.clone(), WriterOptions::default()).unwrap();
         for b in &batches {
             w.push(b).unwrap();
         }
@@ -653,12 +879,17 @@ fn writing_through_a_buffered_file_round_trips() {
     }
 
     let bytes = std::fs::read(&path).unwrap();
-    let seg = SegmentReader::open("e2e", bytes).unwrap();
+    let seg = Reader::open("e2e", bytes).unwrap();
     assert_eq!(seg.rows(), 60);
     let index = row_index_map(&batches);
     for (col, field) in flds.iter().enumerate() {
-        let want = Column::from_values(&field.ty, &concat_values(&batches, col, 0..60, &index)).unwrap();
-        assert!(columns_equal(&read_full_column(&seg, col, &flds), &want), "column {}", field.name);
+        let want =
+            Column::from_values(&field.ty, &concat_values(&batches, col, 0..60, &index)).unwrap();
+        assert!(
+            columns_equal(&read_full_column(&seg, col, &flds), &want),
+            "column {}",
+            field.name
+        );
     }
     std::fs::remove_file(&path).unwrap();
 }
@@ -673,7 +904,7 @@ fn full_size_row_groups_round_trip() {
     let batches: Vec<Batch> = sizes.iter().map(|&n| batch(&mut rng, n)).collect();
 
     let bytes = write_segment(&flds, &batches, WriterOptions::default());
-    let seg = SegmentReader::open("e2e", bytes).unwrap();
+    let seg = Reader::open("e2e", bytes).unwrap();
     assert_eq!(seg.rows(), 70_000);
     assert_eq!(seg.row_groups().len(), 2);
     assert!(seg.row_groups()[0].rows >= DEFAULT_ROW_GROUP_ROWS as u64);
@@ -683,9 +914,17 @@ fn full_size_row_groups_round_trip() {
     for (rg_idx, rg) in seg.row_groups().iter().enumerate() {
         let range = start..start + rg.rows as usize;
         for (col, field) in flds.iter().enumerate() {
-            let want = Column::from_values(&field.ty, &concat_values(&batches, col, range.clone(), &index)).unwrap();
+            let want = Column::from_values(
+                &field.ty,
+                &concat_values(&batches, col, range.clone(), &index),
+            )
+            .unwrap();
             let got = seg.read_column(rg_idx, col).unwrap();
-            assert!(columns_equal(&got, &want), "row group {rg_idx} column {}", field.name);
+            assert!(
+                columns_equal(&got, &want),
+                "row group {rg_idx} column {}",
+                field.name
+            );
         }
         start += rg.rows as usize;
     }

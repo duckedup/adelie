@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::exec::Bitmap;
-use crate::format::error::DecodeError;
-use crate::format::wire::{Cursor, Sink};
+use crate::segment::error::DecodeError;
+use crate::segment::wire::{Cursor, Sink};
 
 fn is_valid(validity: Option<&Bitmap>, i: usize) -> bool {
     validity.is_none_or(|v| v.get(i))
@@ -68,8 +68,8 @@ pub(super) fn decode(
             }
             data.extend_from_slice(entries[code as usize]);
         }
-        let off = u32::try_from(data.len())
-            .map_err(|_| DecodeError::Malformed("dict: too much data"))?;
+        let off =
+            u32::try_from(data.len()).map_err(|_| DecodeError::Malformed("dict: too much data"))?;
         offsets.push(off);
     }
     Ok((offsets, data))
@@ -78,9 +78,9 @@ pub(super) fn decode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adelie_harness::rng::SplitMix64;
     use crate::exec::{Column, OwnedValues};
     use crate::types::DataType;
+    use adelie_harness::rng::SplitMix64;
 
     /// Builds STRING offsets/data from `rows` (`None` = null), and the matching validity.
     fn build(rows: &[Option<&str>]) -> (Vec<u32>, Vec<u8>, Option<Bitmap>) {
@@ -112,7 +112,10 @@ mod tests {
         assert_eq!(got_data, data);
         let col = Column::from_parts(
             DataType::String,
-            OwnedValues::String { offsets: got_offsets, data: got_data },
+            OwnedValues::String {
+                offsets: got_offsets,
+                data: got_data,
+            },
             validity,
         );
         assert!(col.is_ok());
@@ -177,6 +180,6 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode(&mut c, crate::format::MAX_DECODE_ROWS, None).is_err());
+        assert!(decode(&mut c, crate::segment::MAX_DECODE_ROWS, None).is_err());
     }
 }

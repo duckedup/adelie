@@ -6,7 +6,11 @@ use super::wire::{Cursor, Sink};
 
 /// `bits` in `0..=64`, safe against the shift-overflow a literal `1u64 << 64` would cause.
 fn mask(bits: u8) -> u64 {
-    if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
 }
 
 /// Appends fixed-width fields LSB-first, packing across byte boundaries as it goes.
@@ -17,7 +21,10 @@ pub(crate) struct BitWriter {
 
 impl BitWriter {
     pub(crate) fn new() -> Self {
-        BitWriter { buf: Vec::new(), bits: 0 }
+        BitWriter {
+            buf: Vec::new(),
+            bits: 0,
+        }
     }
 
     /// Writes the low `bits` bits of `value` (masked first), `bits` in `0..=64`.
@@ -31,7 +38,10 @@ impl BitWriter {
             }
             let take = remaining.min(8 - bit_off);
             let chunk = (value & mask(take)) as u8;
-            *self.buf.last_mut().expect("just pushed or already had a byte") |= chunk << bit_off;
+            *self
+                .buf
+                .last_mut()
+                .expect("just pushed or already had a byte") |= chunk << bit_off;
             value >>= take;
             remaining -= take;
             self.bits += take as usize;
@@ -51,7 +61,10 @@ pub(crate) struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
-        BitReader { buf: bytes, bits: 0 }
+        BitReader {
+            buf: bytes,
+            bits: 0,
+        }
     }
 
     /// Reads `bits` bits (`0..=64`); `Truncated` if fewer remain.
@@ -117,7 +130,9 @@ mod tests {
     #[test]
     fn bit_widths_round_trip_at_boundaries() {
         for &bits in &[0u8, 1, 7, 63, 64] {
-            let values: Vec<u64> = (0..37).map(|i| (i as u64).wrapping_mul(0x9e37) & mask(bits)).collect();
+            let values: Vec<u64> = (0..37)
+                .map(|i| (i as u64).wrapping_mul(0x9e37) & mask(bits))
+                .collect();
             let mut bw = BitWriter::new();
             for &v in &values {
                 bw.write(v, bits);
@@ -157,7 +172,10 @@ mod tests {
         s.bytes(&[]);
         let buf = s.into_vec();
         let mut c = Cursor::new(&buf);
-        assert!(matches!(read_for(&mut c, 0), Err(DecodeError::Malformed(_))));
+        assert!(matches!(
+            read_for(&mut c, 0),
+            Err(DecodeError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -168,6 +186,9 @@ mod tests {
         s.bytes(&[1, 2]); // 3 rows at width 8 need 3 bytes, not 2
         let buf = s.into_vec();
         let mut c = Cursor::new(&buf);
-        assert!(matches!(read_for(&mut c, 3), Err(DecodeError::Malformed(_))));
+        assert!(matches!(
+            read_for(&mut c, 3),
+            Err(DecodeError::Malformed(_))
+        ));
     }
 }

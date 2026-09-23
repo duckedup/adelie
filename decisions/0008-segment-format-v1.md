@@ -86,4 +86,4 @@ TRAILER  footer_len u32 · footer_crc32c u32 · "ADLIDX" · FORMAT_VERSION u16
 
 ## Evidence
 
-- adelie-44e, SPEC §5 and §18, `src/format/`.
+- adelie-44e, SPEC §5 and §18, `src/segment/`.

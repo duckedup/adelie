@@ -23,7 +23,10 @@ pub(super) fn encode_validity(v: Option<&Bitmap>, rows: usize, out: &mut Sink) {
     }
 }
 
-pub(super) fn decode_validity(cur: &mut Cursor, rows: usize) -> Result<Option<Bitmap>, DecodeError> {
+pub(super) fn decode_validity(
+    cur: &mut Cursor,
+    rows: usize,
+) -> Result<Option<Bitmap>, DecodeError> {
     match cur.u8()? {
         0 => Ok(None),
         1 => {

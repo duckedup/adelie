@@ -72,17 +72,22 @@ impl ValueSet {
         }
         for pair in values.windows(2) {
             if total_cmp(&pair[0], &pair[1]) != Some(Ordering::Less) {
-                return Err(DecodeError::Malformed("value set is not strictly increasing"));
+                return Err(DecodeError::Malformed(
+                    "value set is not strictly increasing",
+                ));
             }
         }
-        Ok(ValueSet { ty: ty.clone(), values })
+        Ok(ValueSet {
+            ty: ty.clone(),
+            values,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::SplitMix64;
+    use super::*;
     use crate::types::Decimal;
 
     const N: usize = if cfg!(miri) { 100 } else { 5000 };

@@ -1,8 +1,8 @@
 //! FOR (encoding id 3, SPEC §5): values mapped to an order-preserving `u64` (signed columns
 //! flip the sign bit), then one FoR block (`super::write_for`/`read_for`).
 
-use crate::format::error::DecodeError;
-use crate::format::wire::{Cursor, Sink};
+use crate::segment::error::DecodeError;
+use crate::segment::wire::{Cursor, Sink};
 
 const SIGN: u64 = 1 << 63;
 
@@ -91,6 +91,6 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode_i64(&mut c, crate::format::MAX_DECODE_ROWS).is_err());
+        assert!(decode_i64(&mut c, crate::segment::MAX_DECODE_ROWS).is_err());
     }
 }

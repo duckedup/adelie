@@ -14,11 +14,11 @@ mod wire;
 mod writer;
 
 pub use encode::Encoding;
-pub use error::FormatError;
+pub use error::Error;
 pub use idx::{IdxReader, IdxWriter};
 pub use index::{IndexKind, SkipIndex};
-pub use reader::{ChunkMeta, IndexEntry, RowGroupMeta, SegmentReader};
-pub use writer::{SegmentMeta, SegmentWriter, WriterOptions};
+pub use reader::{ChunkMeta, IndexEntry, Reader, RowGroupMeta};
+pub use writer::{Meta, Writer, WriterOptions};
 
 pub(crate) const SEGMENT_MAGIC: [u8; 6] = *b"ADLSEG";
 pub(crate) const IDX_MAGIC: [u8; 6] = *b"ADLIDX";

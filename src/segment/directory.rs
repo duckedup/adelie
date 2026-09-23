@@ -43,7 +43,11 @@ pub(crate) fn decode_directory(cur: &mut Cursor) -> Result<Vec<RawIndexEntry>, D
         let mut r = cur.record()?;
         let kind = r.uvarint()?;
         let rg_plus_1 = r.uvarint()?;
-        let row_group = if rg_plus_1 == 0 { None } else { Some((rg_plus_1 - 1) as usize) };
+        let row_group = if rg_plus_1 == 0 {
+            None
+        } else {
+            Some((rg_plus_1 - 1) as usize)
+        };
         let ncols = r.uvarint()?;
         let ncols = r.guard_len(ncols, 1)?;
         let mut columns = Vec::with_capacity(ncols);
@@ -54,7 +58,15 @@ pub(crate) fn decode_directory(cur: &mut Cursor) -> Result<Vec<RawIndexEntry>, D
         let len = r.uvarint()?;
         let crc = r.u32()?;
         let params = r.bytes()?.to_vec();
-        out.push(RawIndexEntry { kind, row_group, columns, offset, len, crc, params });
+        out.push(RawIndexEntry {
+            kind,
+            row_group,
+            columns,
+            offset,
+            len,
+            crc,
+            params,
+        });
     }
     Ok(out)
 }

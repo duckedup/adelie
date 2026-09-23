@@ -56,8 +56,8 @@ impl Ngram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_support::SplitMix64;
+    use super::*;
 
     fn substrings_ge3(s: &str) -> Vec<String> {
         let b = s.as_bytes();
@@ -88,16 +88,21 @@ mod tests {
         for v in &values {
             let Value::String(s) = v else { unreachable!() };
             for sub in substrings_ge3(s) {
-                assert!(ngram.might_contain_substring(&sub), "false negative for {sub:?}");
+                assert!(
+                    ngram.might_contain_substring(&sub),
+                    "false negative for {sub:?}"
+                );
             }
         }
     }
 
     #[test]
     fn it_prunes() {
-        let col =
-            Column::from_values(&DataType::String, &[Value::String("checkout failed".to_string())])
-                .unwrap();
+        let col = Column::from_values(
+            &DataType::String,
+            &[Value::String("checkout failed".to_string())],
+        )
+        .unwrap();
         let ngram = Ngram::build(&col);
         assert!(!ngram.might_contain_substring("timeout"));
     }
@@ -114,9 +119,11 @@ mod tests {
 
     #[test]
     fn load_round_trips_a_built_ngram() {
-        let col =
-            Column::from_values(&DataType::String, &[Value::String("hello world".to_string())])
-                .unwrap();
+        let col = Column::from_values(
+            &DataType::String,
+            &[Value::String("hello world".to_string())],
+        )
+        .unwrap();
         let built = Ngram::build(&col);
         let blob = built.encode();
         let loaded = Ngram::load(&blob).unwrap();
@@ -145,7 +152,10 @@ mod tests {
     fn two_builds_are_byte_identical() {
         let col = Column::from_values(
             &DataType::String,
-            &[Value::String("ab".to_string()), Value::String("abc".to_string())],
+            &[
+                Value::String("ab".to_string()),
+                Value::String("abc".to_string()),
+            ],
         )
         .unwrap();
         assert_eq!(Ngram::build(&col).encode(), Ngram::build(&col).encode());
