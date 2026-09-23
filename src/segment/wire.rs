@@ -27,10 +27,6 @@ impl Sink {
         self.buf.push(v);
     }
 
-    pub(crate) fn u16(&mut self, v: u16) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
     pub(crate) fn u32(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
@@ -90,10 +86,6 @@ impl Sink {
         self.bytes(&inner.buf);
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.buf.len()
-    }
-
     pub(crate) fn into_vec(self) -> Vec<u8> {
         self.buf
     }
@@ -122,10 +114,6 @@ impl<'a> Cursor<'a> {
 
     pub(crate) fn u8(&mut self) -> Result<u8, DecodeError> {
         Ok(self.take(1)?[0])
-    }
-
-    pub(crate) fn u16(&mut self) -> Result<u16, DecodeError> {
-        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
     }
 
     pub(crate) fn u32(&mut self) -> Result<u32, DecodeError> {
@@ -227,7 +215,6 @@ mod tests {
         s.i32(i32::MIN);
         s.i128(i128::MIN);
         s.u32(u32::MAX);
-        s.u16(u16::MAX);
         s.u8(1);
         let buf = s.into_vec();
         let mut c = Cursor::new(&buf);
@@ -238,7 +225,6 @@ mod tests {
         assert_eq!(c.i32().unwrap(), i32::MIN);
         assert_eq!(c.i128().unwrap(), i128::MIN);
         assert_eq!(c.u32().unwrap(), u32::MAX);
-        assert_eq!(c.u16().unwrap(), u16::MAX);
         assert_eq!(c.u8().unwrap(), 1);
         assert!(c.is_empty());
     }

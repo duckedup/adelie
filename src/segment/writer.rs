@@ -77,14 +77,13 @@ impl StatsAcc {
         if rg_stats.rows <= rg_stats.null_count {
             return;
         }
-        if let Some(v) = min {
-            if self
+        if let Some(v) = min
+            && self
                 .min
                 .as_ref()
                 .is_none_or(|m| total_cmp(&v, m) == Some(Ordering::Less))
-            {
-                self.min = Some(v);
-            }
+        {
+            self.min = Some(v);
         }
         if self.max_dropped {
             return;

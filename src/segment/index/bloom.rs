@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn random_float(rng: &mut SplitMix64, i: usize) -> Value {
-        if i % 97 == 0 {
+        if i.is_multiple_of(97) {
             return Value::Float64(f64::NAN);
         }
         Value::Float64((rng.next_u64() as i64) as f64 / 1000.0)

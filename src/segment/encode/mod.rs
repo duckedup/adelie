@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn hostile_bytes_never_panic_and_valid_rows_are_gettable() {
-        let mut rng = SplitMix64::new(0xC0FF_EE);
+        let mut rng = SplitMix64::new(0x00C0_FFEE);
         let iterations = if cfg!(miri) { 50 } else { 2_000 };
         for _ in 0..iterations {
             let rows = rng.range(0, 8) as usize;
