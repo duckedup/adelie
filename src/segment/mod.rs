@@ -1,20 +1,21 @@
 //! Segment format v1 (SPEC §5, D0008): writer, reader, encodings, CRC framing, skip structures.
-mod crc;
+pub(crate) mod crc;
 mod directory;
 pub mod encode;
 mod error;
-mod footer;
+pub(crate) mod footer;
 mod hash;
 mod idx;
 pub mod index;
 mod reader;
-mod type_id;
-mod value;
-mod wire;
+pub(crate) mod type_id;
+pub(crate) mod value;
+pub(crate) mod wire;
 mod writer;
 
 pub use encode::Encoding;
 pub use error::Error;
+pub(crate) use error::DecodeError;
 pub use idx::{IdxReader, IdxWriter};
 pub use index::{IndexKind, SkipIndex};
 pub use reader::{ChunkMeta, IndexEntry, Reader, RowGroupMeta};

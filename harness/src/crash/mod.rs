@@ -154,7 +154,7 @@ static FAILPOINT_HITS: AtomicU64 = AtomicU64::new(0);
 /// Fires `name`'s nth hit under `ADELIE_FAILPOINT=name:nth`: prints, flushes and blocks on
 /// stdin. A no-op everywhere else, including every hit of `name` that isn't the nth.
 ///
-/// adelie's store will call a cfg'd equivalent that reads the same env protocol at E4.
+/// adelie's store calls its own copy of this (`src/fail.rs`) with the same env protocol (D0009).
 pub fn failpoint(name: &str) {
     if std::env::var("ADELIE_CRASH_ROLE").ok().as_deref() != Some("child") {
         return;
