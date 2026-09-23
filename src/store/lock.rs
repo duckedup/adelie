@@ -1,8 +1,7 @@
 //! `acquire`: the one-writer-per-store lock (SPEC §6), via `std::fs::File::try_lock` (stable
 //! since 1.89). No dependency, no unsafe.
 
-use std::fs::{File, OpenOptions};
-use std::io::TryLockError;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use super::Error;

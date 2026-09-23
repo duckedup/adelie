@@ -91,7 +91,6 @@ fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::io::Io) -> Result<(), Error
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::exec::{Column, Field};
     use crate::store::{Store, StoreOptions};
     use crate::types::{DataType, Value};
