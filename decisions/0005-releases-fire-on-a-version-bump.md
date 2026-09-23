@@ -17,5 +17,5 @@ crates.io instead of failing.
 ## Evidence
 
 - `.github/workflows/release.yml`.
-- nidus D0007 and nidus #124 (concurrent release runs racing the tag).
+- nidus's version-stamp decision and nidus #124 (concurrent release runs racing the tag).
 - Uses the `CARGO_REGISTRY_TOKEN` organization secret (visible to this repo).
