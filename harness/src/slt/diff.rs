@@ -2,6 +2,7 @@
 //! record's own expected block, if any, is never consulted.
 
 use super::render::render_row;
+use super::run;
 use super::{ColType, Condition, Directive, Failure, Record, Report, lines_match};
 use crate::engine::{Engine, Outcome};
 
@@ -24,14 +25,10 @@ pub fn diff(a: &mut dyn Engine, b: &mut dyn Engine, records: &[Record]) -> Repor
     report
 }
 
-/// Skipped if a `skipif` names either engine, or an `onlyif` names one that is not in the pair.
+/// A comparison needs both sides, so a record is skipped when either engine alone would skip
+/// it: stacked `onlyif`s keep `run`'s any-of meaning.
 fn is_skipped(conditions: &[Condition], a_name: &str, b_name: &str) -> bool {
-    conditions
-        .iter()
-        .any(|c| matches!(c, Condition::SkipIf(n) if n == a_name || n == b_name))
-        || conditions
-            .iter()
-            .any(|c| matches!(c, Condition::OnlyIf(n) if n != a_name && n != b_name))
+    run::is_skipped(conditions, a_name) || run::is_skipped(conditions, b_name)
 }
 
 fn check(
@@ -45,9 +42,19 @@ fn check(
     let rb = b.run(&record.sql);
     match (&record.directive, ra, rb) {
         (_, Err(_), Err(_)) => Ok(()),
-        (_, Ok(_), Err(eb)) => Err(fail(record, a_name, "ok", &format!("error: {eb}"))),
-        (_, Err(ea), Ok(_)) => Err(fail(record, a_name, &format!("error: {ea}"), "ok")),
+        (_, Ok(_), Err(eb)) => Err(fail(record, a_name, b_name, "ok", &format!("error: {eb}"))),
+        (_, Err(ea), Ok(_)) => Err(fail(record, a_name, b_name, &format!("error: {ea}"), "ok")),
         (Directive::Query { types, sort, .. }, Ok(oa), Ok(ob)) => {
+            // Rendering zips each row against `types`, so a surplus column would vanish before
+            // the comparison ever saw it.
+            let (wa, wb) = (
+                width_mismatch(&oa, types.len()),
+                width_mismatch(&ob, types.len()),
+            );
+            if wa.is_some() || wb.is_some() {
+                let [a_text, b_text] = [wa, wb].map(|w| w.unwrap_or_else(|| "ok".to_string()));
+                return Err(fail(record, a_name, b_name, &a_text, &b_text));
+            }
             let ra_lines = render_outcome(&oa, types);
             let rb_lines = render_outcome(&ob, types);
             if lines_match(*sort, &ra_lines, &rb_lines) {
@@ -56,6 +63,7 @@ fn check(
                 Err(fail(
                     record,
                     a_name,
+                    b_name,
                     &ra_lines.join("\n"),
                     &rb_lines.join("\n"),
                 ))
@@ -72,12 +80,21 @@ fn render_outcome(outcome: &Outcome, types: &[ColType]) -> Vec<String> {
     }
 }
 
-fn fail(record: &Record, a_name: &str, a_text: &str, b_text: &str) -> Failure {
+fn width_mismatch(outcome: &Outcome, width: usize) -> Option<String> {
+    let Outcome::Rows(rows) = outcome else {
+        return None;
+    };
+    rows.iter()
+        .find(|r| r.len() != width)
+        .map(|r| format!("expected {width} columns, got {}", r.len()))
+}
+
+fn fail(record: &Record, a_name: &str, b_name: &str, a_text: &str, b_text: &str) -> Failure {
     Failure {
         line: record.line,
         sql: record.sql.clone(),
         expected: format!("{a_name}: {a_text}"),
-        actual: b_text.to_string(),
+        actual: format!("{b_name}: {b_text}"),
     }
 }
 
@@ -129,5 +146,30 @@ mod tests {
         let report = diff(&mut a, &mut b, &records);
         assert_eq!(report.skipped, 1);
         assert_eq!(report.passed, 0);
+    }
+
+    #[test]
+    fn a_surplus_column_fails_even_when_the_declared_ones_agree() {
+        let mut a =
+            FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Rows(vec![vec![Value::Int(1)]])));
+        let mut b = FakeEngine::new("b").answer(
+            "SELECT 1",
+            Ok(Outcome::Rows(vec![vec![Value::Int(1), Value::Int(9)]])),
+        );
+        let records = parse("query I\nSELECT 1").unwrap();
+        let report = diff(&mut a, &mut b, &records);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures[0].actual.contains("got 2"));
+    }
+
+    #[test]
+    fn stacked_onlyifs_naming_both_engines_run() {
+        let mut a = FakeEngine::new("a").answer("SELECT 1", Ok(Outcome::Statement));
+        let mut b = FakeEngine::new("b").answer("SELECT 1", Ok(Outcome::Statement));
+        let both = parse("onlyif a\nonlyif b\nstatement ok\nSELECT 1").unwrap();
+        assert_eq!(diff(&mut a, &mut b, &both).passed, 1);
+        // Only one side may run it, so there is nothing to compare.
+        let one = parse("onlyif a\nonlyif other\nstatement ok\nSELECT 1").unwrap();
+        assert_eq!(diff(&mut a, &mut b, &one).skipped, 1);
     }
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use adelie_harness::slt::{Directive, parse};
 
 fn corpus_files() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("slt");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/slt");
     let mut files = Vec::new();
     walk(&root, &mut files);
     files.sort();
@@ -15,9 +15,9 @@ fn corpus_files() -> Vec<PathBuf> {
 
 /// Recurses so the corpus can grow subdirectories later without this test changing.
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+    // A missing directory is a wrong path, not an empty corpus: say which.
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()));
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {

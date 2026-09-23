@@ -79,6 +79,27 @@ impl CrashTarget for Journal {
     fn read_all(store: &Self::Store) -> io::Result<Vec<Row>> {
         read_checked_lines(&store.path)
     }
+
+    /// Compaction in miniature: rewrite the journal to a temp file and rename it over the
+    /// original. A kill before the rename must leave the old journal whole.
+    fn between(store: &mut Self::Store, batch: u64) -> io::Result<()> {
+        if batch % 3 != 2 {
+            return Ok(());
+        }
+        let mut counts = std::collections::BTreeMap::<u64, u32>::new();
+        for (b, _) in read_checked_lines(&store.path)? {
+            *counts.entry(b).or_default() += 1;
+        }
+        let tmp = store.path.with_extension("compact");
+        let mut f = fs::File::create(&tmp)?;
+        for (b, n) in counts {
+            f.write_all(format!("{b} {n} {}\n", fnv1a(b, n)).as_bytes())?;
+        }
+        f.sync_data()?;
+        super::failpoint("journal.compact");
+        fs::rename(&tmp, &store.path)?;
+        fs::File::open(store.path.parent().expect("journal has a dir"))?.sync_all()
+    }
 }
 
 // ── AckBeforeWrite: acks before it's durable ────────────────────────────────
@@ -135,10 +156,10 @@ fn read_pair_lines(path: &Path) -> io::Result<Vec<Row>> {
     let mut rows = Vec::new();
     for line in data.lines() {
         let mut parts = line.split_whitespace();
-        if let (Some(b), Some(i)) = (parts.next(), parts.next()) {
-            if let (Ok(b), Ok(i)) = (b.parse(), i.parse()) {
-                rows.push((b, i));
-            }
+        if let (Some(b), Some(i)) = (parts.next(), parts.next())
+            && let (Ok(b), Ok(i)) = (b.parse(), i.parse())
+        {
+            rows.push((b, i));
         }
     }
     Ok(rows)
@@ -249,6 +270,26 @@ fn journal_survives_failpoint_mid_write() {
     )
     .expect("journal must survive a mid-write kill");
     assert!(summary.killed >= 1);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)] // spawns and kills a child process
+fn journal_survives_kills_during_compaction() {
+    let plan = Plan {
+        runs: 4,
+        batches: 12,
+        rows_per_batch: 4,
+        seed: 5,
+        // Compaction runs every third batch, so the nth hit is reachable for nth <= 4 only;
+        // the rest end normally and still get checked.
+        kill: Kill::Failpoint("journal.compact"),
+    };
+    let summary = run::<Journal>(
+        concat!(module_path!(), "::journal_survives_kills_during_compaction"),
+        &plan,
+    )
+    .expect("journal must survive a kill mid-compaction");
+    assert!(summary.killed >= 1, "no run was killed mid-compaction");
 }
 
 #[test]

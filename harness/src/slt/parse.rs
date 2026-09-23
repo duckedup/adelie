@@ -119,7 +119,7 @@ fn parse_query(
     rest: &str,
     body: &[(usize, &str)],
 ) -> Result<Option<Record>, ParseError> {
-    let mut words = rest.trim().split_whitespace();
+    let mut words = rest.split_whitespace();
     let types_word = words.next().ok_or_else(|| ParseError {
         line: header_line,
         msg: "query: missing column types".to_string(),
@@ -138,9 +138,9 @@ fn parse_query(
     }
 
     let sep = body.iter().position(|(_, t)| t.trim() == "----");
-    let (sql_lines, expected_lines): (&[(usize, &str)], &[(usize, &str)]) = match sep {
+    let (sql_lines, expected_lines) = match sep {
         Some(p) => (&body[..p], &body[p + 1..]),
-        None => (body, &[]),
+        None => (body, &body[body.len()..]),
     };
     let sql = join_sql(sql_lines);
 

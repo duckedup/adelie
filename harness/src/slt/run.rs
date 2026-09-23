@@ -23,7 +23,7 @@ pub fn run(engine: &mut dyn Engine, records: &[Record]) -> Report {
 }
 
 /// Skipped if any `skipif` names this engine, or an `onlyif` list exists and excludes it.
-fn is_skipped(conditions: &[Condition], name: &str) -> bool {
+pub(super) fn is_skipped(conditions: &[Condition], name: &str) -> bool {
     let mut onlyifs = Vec::new();
     for c in conditions {
         match c {

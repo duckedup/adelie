@@ -172,7 +172,7 @@ pub fn failpoint(name: &str) {
     if FAILPOINT_HITS.fetch_add(1, Ordering::SeqCst) + 1 != nth {
         return;
     }
-    println!("fp {name}");
+    println!("{}fp {name}", child::MARK);
     let _ = std::io::stdout().flush();
     let mut discard = String::new();
     let _ = std::io::stdin().lock().read_line(&mut discard);
@@ -225,6 +225,8 @@ struct DriveOutcome {
 }
 
 fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, Violation> {
+    // A kill point is drawn from 1..=batches, so a plan with no batches has nowhere to kill.
+    assert!(plan.batches >= 1, "crash::Plan needs batches >= 1");
     let exe = std::env::current_exe().map_err(|e| Violation::Child {
         run: 0,
         msg: format!("current_exe: {e}"),
@@ -269,7 +271,7 @@ fn run_parent<T: CrashTarget>(test_path: &str, plan: &Plan) -> Result<Summary, V
         })?;
 
         let outcome = match plan.kill {
-            Kill::AtAck => drive_at_ack(&mut child, rng.range(1, plan.batches)),
+            Kill::AtAck => drive_at_ack(&mut child, rng.range(1, plan.batches + 1)),
             Kill::Failpoint(_) => drive_failpoint(&mut child),
             Kill::Random { max_delay_ms } => drive_random(&mut child, &mut rng, max_delay_ms),
         }
@@ -354,7 +356,7 @@ fn drive_at_ack(child: &mut ChildProcess, k: u64) -> Result<DriveOutcome, String
         let line = line.map_err(|e| format!("reading child stdout: {e}"))?;
         match child::parse_line(&line) {
             child::Line::Sent(b) => highest_sent = Some(b),
-            child::Line::Ack(_) => {
+            child::Line::Ack => {
                 acked += 1;
                 if acked == k {
                     let _ = child.kill();
@@ -368,7 +370,7 @@ fn drive_at_ack(child: &mut ChildProcess, k: u64) -> Result<DriveOutcome, String
                 stdin.flush().map_err(|e| format!("flushing stdin: {e}"))?;
             }
             child::Line::Err(msg) => return Err(msg),
-            child::Line::Fp(_) | child::Line::Other => {}
+            child::Line::Fp | child::Line::Other => {}
         }
     }
     Ok(DriveOutcome {
@@ -388,12 +390,12 @@ fn drive_failpoint(child: &mut ChildProcess) -> Result<DriveOutcome, String> {
         let line = line.map_err(|e| format!("reading child stdout: {e}"))?;
         match child::parse_line(&line) {
             child::Line::Sent(b) => highest_sent = Some(b),
-            child::Line::Ack(_) => {
+            child::Line::Ack => {
                 acked += 1;
                 writeln!(stdin, "go").map_err(|e| format!("writing go: {e}"))?;
                 stdin.flush().map_err(|e| format!("flushing stdin: {e}"))?;
             }
-            child::Line::Fp(_) => {
+            child::Line::Fp => {
                 let _ = child.kill();
                 return Ok(DriveOutcome {
                     killed: true,
@@ -430,9 +432,9 @@ fn drive_random(
         {
             match child::parse_line(&line) {
                 child::Line::Sent(b) => observed_reader.lock().unwrap().0 = Some(b),
-                child::Line::Ack(_) => observed_reader.lock().unwrap().1 += 1,
+                child::Line::Ack => observed_reader.lock().unwrap().1 += 1,
                 child::Line::Err(msg) => *err_reader.lock().unwrap() = Some(msg),
-                child::Line::Fp(_) | child::Line::Other => {}
+                child::Line::Fp | child::Line::Other => {}
             }
         }
     });
@@ -443,7 +445,13 @@ fn drive_random(
         0
     };
     thread::sleep(Duration::from_millis(delay));
-    let killed = child.kill().is_ok();
+    // kill() succeeds on an exited-but-unreaped child, so a child that died on its own just
+    // before the delay would read as killed and skip the exit-status check. Narrows, not
+    // closes, the window.
+    let killed = match child.try_wait() {
+        Ok(Some(_)) => false,
+        _ => child.kill().is_ok(),
+    };
     reader
         .join()
         .map_err(|_| "reader thread panicked".to_string())?;

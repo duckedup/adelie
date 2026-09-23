@@ -12,8 +12,12 @@ export const JOB_IDS = [...RUST_JOBS, 'bench', 'checker-selftest', 'checker-laws
 const RUST = [
   /^src\//, /^tests\//, /^benches\//, /^examples\//, /^build\.rs$/,
   /^Cargo\.(toml|lock)$/, /^rust-toolchain\.toml$/, /^\.cargo\//,
-  /^\.github\/workflows\//, /^harness\//,
+  /^\.github\/workflows\//,
 ]
+// harness/ is a workspace member but only a dev-dependency: the --workspace jobs build it,
+// while build-budget and release build the root library alone and never compile it.
+const HARNESS = [/^harness\//]
+const WORKSPACE_JOBS = ['fmt', 'clippy', 'test', 'miri']
 // bench's own sources, its path dependency on harness/, the corpus it runs differential over,
 // and its workflow — the only paths the `bench` job reads. Not in RUST_JOBS: that is the
 // quarantine (D0006). Once adelie implements Engine (E6), src/ must join this list too.
@@ -21,7 +25,7 @@ const BENCH = [/^bench\//, /^harness\//, /^tests\/slt\//, /^\.github\/workflows\
 const SKILL = [/^\.claude\/skills\/adelie\/(lib|bin)\//, /^\.claude\/hooks\//, /^\.github\/workflows\/ci\.yml$/]
 
 export const CI_JOBS = {
-  ...Object.fromEntries(RUST_JOBS.map(j => [j, RUST])),
+  ...Object.fromEntries(RUST_JOBS.map(j => [j, WORKSPACE_JOBS.includes(j) ? [...RUST, ...HARNESS] : RUST])),
   bench: BENCH,
   'checker-selftest': SKILL,
   'checker-laws': [/./],

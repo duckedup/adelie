@@ -252,9 +252,10 @@ test('lanes: bench/ maps to the bench job only, not build-budget — that is the
   eq(r.jobs.includes('build-budget'), false, 'build-budget stays clean of bench')
 })
 
-test('lanes: harness/ hits every RUST job plus bench, its own path dependency', () => {
+test('lanes: harness/ hits the --workspace jobs plus bench, never build-budget or release', () => {
   const r = lanes(['harness/src/slt/run.rs'])
-  eq(r.jobs, [...RUST_JOBS, 'bench', 'checker-laws'], 'jobs')
+  eq(r.jobs, ['fmt', 'clippy', 'test', 'miri', 'bench', 'checker-laws'], 'jobs')
+  eq(r.unmatched, [], 'not unmapped')
 })
 
 test('lanes: the slt corpus hits every RUST job plus bench, which differentials over it', () => {
