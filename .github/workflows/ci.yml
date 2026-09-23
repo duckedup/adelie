@@ -171,16 +171,16 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      # `--pr` reads the real base ref and the PR body; a merge group diffs against its base.
+      # `--pr` reads the real base ref and the PR body. A merge group diffs against its
+      # base_sha: the commit this entry builds on, which for a stacked or queued entry is the
+      # entry ahead of it, not main. Diffing against main would hold it to every PR below it.
       - name: Check repo laws
         env:
           GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           if [ -n "${{ github.event.pull_request.number }}" ]; then
             .claude/skills/adelie/bin/adelie-check laws --pr ${{ github.event.pull_request.number }}
           else
-            base="${{ github.event.merge_group.base_ref }}"
-            base="origin/${base#refs/heads/}"
-            git fetch --quiet origin "${base#origin/}"
-            .claude/skills/adelie/bin/adelie-check laws --base "$base"
+            .claude/skills/adelie/bin/adelie-check laws --base "$BASE_SHA"
           fi
