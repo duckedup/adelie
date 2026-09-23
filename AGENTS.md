@@ -2,7 +2,7 @@
 
 adelie: a pure-Rust columnar analytics store with SQL. This is the one instruction file for
 every agent (Claude Code, Codex, Cursor); there is no CLAUDE.md. Why a rule exists lives in
-`decisions/` (the `D####` pointers).
+`decisions/` (the `D####` pointers). The product spec is `SPEC.md`.
 
 ## Communication style
 
