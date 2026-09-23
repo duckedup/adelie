@@ -43,8 +43,12 @@ implementation detail.
 - No Arrow, no DataFusion, no Parquet in the core. adelie owns its format and its engine.
 - `#![deny(unsafe_code)]`. Any exception is a single scoped site with its own decision record.
 - The lean library build runs under Miri.
-- The core is synchronous and runtime-agnostic. Parallelism is `std::thread::scope` over
-  morsels (§7). Async lives only at the server edge.
+- **Compute is sync; IO is async where it pays.** Query execution is CPU-bound and runs on
+  `std::thread::scope` workers over morsels (§7); it never blocks on an async runtime. IO that
+  benefits from async uses it: the server (HTTP, OTLP, MCP), cluster networking and
+  distributed query fan-out (§10), and the storage read path (io_uring where available). IO
+  feeds batches to the compute workers through bounded queues. The lean library build keeps a
+  blocking read path, so it stays runtime-free, Miri-checkable, and wasm-friendly.
 
 ---
 
@@ -66,7 +70,7 @@ implementation detail.
 | A write-ahead log | A write is acknowledged only once its segment is durable (§6) |
 | Transactions, `UPDATE`, OLTP point workloads | Analytics store; writes are appends and predicate deletes |
 | Arrow / DataFusion / Parquet in the core | Build cost; adelie owns its format and engine. Parquet import/export may ship as a feature |
-| An async core | The hot path is CPU-bound; async stays at the edge |
+| Async compute | Operators are CPU-bound; async is for IO only (§1) |
 | A cost-based optimizer | Rule-based planning over good statistics first (§8) |
 
 ---
