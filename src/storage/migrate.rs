@@ -45,7 +45,7 @@ fn load_job_from(manifest: &Manifest, id: u64) -> Result<Loaded, Error> {
     let job = manifest
         .job(id)
         .cloned()
-        .ok_or_else(|| Error::Manifest(manifest::Error::NoSuchJob { job: id }))?;
+        .ok_or(Error::Manifest(manifest::Error::NoSuchJob { job: id }))?;
     let source = manifest
         .tables
         .iter()

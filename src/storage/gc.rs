@@ -14,7 +14,9 @@ use super::{Error, Shared, io_err, now_ms};
 /// one `ForgetGarbage` for what it removed. Returns how many files were deleted.
 pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
     let now = now_ms();
-    let before_ms = now.saturating_sub(shared.opts.retain_definitions.as_millis() as u64);
+    // Expired once its age reaches `retain_definitions` (`ExpireRetired` is strict, hence the
+    // +1): zero retention then expires even an entry retired this same millisecond.
+    let before_ms = now.saturating_sub(shared.opts.retain_definitions.as_millis() as u64) + 1;
     let any_expired = shared
         .state
         .lock()

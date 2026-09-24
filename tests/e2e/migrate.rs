@@ -202,7 +202,9 @@ fn add_column_reuses_every_segment() {
         name: "extra".to_string(),
         ty: DataType::String,
     });
-    let plan = store.explain_alter(&table(), &[add.clone()]).unwrap();
+    let plan = store
+        .explain_alter(&table(), std::slice::from_ref(&add))
+        .unwrap();
     assert_eq!(plan.rewrites, 0);
     assert_eq!(plan.segments, 3);
 
@@ -301,7 +303,9 @@ fn rename_keeps_segments_and_data() {
         from: "idx".to_string(),
         to: "i".to_string(),
     };
-    let plan = store.explain_alter(&table(), &[rename.clone()]).unwrap();
+    let plan = store
+        .explain_alter(&table(), std::slice::from_ref(&rename))
+        .unwrap();
     assert_eq!(plan.rewrites, 0);
 
     store.migrate(&table(), vec![rename]).unwrap();
@@ -364,7 +368,9 @@ fn order_by_rewrites_every_segment() {
     before_ids.sort_unstable();
 
     let order_by = Alter::OrderBy(vec!["idx".to_string(), "batch".to_string()]);
-    let plan = store.explain_alter(&table(), &[order_by.clone()]).unwrap();
+    let plan = store
+        .explain_alter(&table(), std::slice::from_ref(&order_by))
+        .unwrap();
     assert_eq!(plan.rewrites, 3);
 
     store.migrate(&table(), vec![order_by]).unwrap();
