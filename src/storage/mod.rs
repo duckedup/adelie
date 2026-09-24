@@ -32,6 +32,7 @@ use buffer::{FlushTicket, should_flush};
 
 pub use engines::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
 pub use error::Error;
+pub use manifest::TableSpec;
 
 /// `Store::open` defaults and the compaction/GC policy (SPEC §6, §18).
 #[derive(Debug, Clone)]
@@ -205,30 +206,18 @@ impl Store {
         })
     }
 
-    pub fn create_table(
-        &self,
-        name: &TableName,
-        engine: &str,
-        schema: Vec<Field>,
-    ) -> Result<(), Error> {
-        if engine_by_name(engine).is_none() {
-            return Err(Error::Manifest(manifest::Error::UnknownEngine {
-                table: name.to_string(),
-                engine: engine.to_string(),
+    /// Validates `spec` first, so every SPEC §18 rule teaches even for an engine that isn't
+    /// built yet, then rejects it if it names one (`EngineNotBuilt`), then commits.
+    pub fn create_table(&self, spec: TableSpec) -> Result<(), Error> {
+        spec.validate()?;
+        if engine_by_name(&spec.engine).is_none() {
+            return Err(Error::Manifest(manifest::Error::EngineNotBuilt {
+                table: spec.name.to_string(),
+                engine: spec.engine.clone(),
             }));
         }
-        let name = name.clone();
-        let engine = engine.to_string();
-        self.shared.commit(
-            move |_v| {
-                vec![Edit::CreateTable {
-                    name,
-                    engine,
-                    schema,
-                }]
-            },
-            &[],
-        )?;
+        self.shared
+            .commit(move |_v| vec![Edit::CreateTable { spec }], &[])?;
         Ok(())
     }
 
@@ -250,10 +239,11 @@ impl Store {
                     .manifest()
                     .table(table)
                     .ok_or_else(|| Error::UnknownTable(table.to_string()))?;
-                if batch.fields() != entry.schema.as_slice() {
+                let fields = entry.fields();
+                if batch.fields() != fields.as_slice() {
                     return Err(Error::SchemaMismatch {
                         table: table.to_string(),
-                        detail: describe_mismatch(batch.fields(), &entry.schema),
+                        detail: describe_mismatch(batch.fields(), &fields),
                     });
                 }
             }
@@ -511,7 +501,9 @@ mod tests {
 
     fn open(dir: &Path, opts: StoreOptions) -> Store {
         let store = Store::open(dir, opts).unwrap();
-        store.create_table(&table(), "append", schema()).unwrap();
+        store
+            .create_table(TableSpec::new(table(), schema()))
+            .unwrap();
         store
     }
 
@@ -643,18 +635,41 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // touches the real filesystem
     fn opening_a_manifest_with_an_unknown_engine_names_it() {
+        use crate::storage::manifest::{FieldId, Manifest as RawManifest, SchemaField, TableId};
+
         let dir = temp_dir("unknown-engine-open");
         std::fs::create_dir_all(&dir).unwrap();
-        let m = crate::storage::manifest::Commit {
-            base: 0,
-            edits: vec![Edit::CreateTable {
-                name: table(),
-                engine: "nope".to_string(),
-                schema: schema(),
-            }],
-        }
-        .apply(&crate::storage::manifest::Manifest::empty(), 0)
-        .unwrap();
+        // `Commit::apply` now validates the engine (rejecting "nope"), so this builds the
+        // on-disk shape directly: an old store could still name an engine this build dropped.
+        let entry = TableEntry {
+            id: TableId(1),
+            name: table(),
+            engine: "nope".to_string(),
+            schema: schema()
+                .into_iter()
+                .enumerate()
+                .map(|(i, field)| SchemaField {
+                    id: FieldId(i as u64 + 1),
+                    field,
+                })
+                .collect(),
+            next_field_id: schema().len() as u64 + 1,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
+            segments: vec![],
+            tombstones: vec![],
+        };
+        let m = RawManifest {
+            version: 1,
+            next_segment_id: 0,
+            next_table_id: 2,
+            tables: vec![entry],
+            garbage: vec![],
+        };
         Publisher::new(dir.clone(), Io::real(), 8)
             .publish(&m)
             .unwrap();
@@ -674,7 +689,9 @@ mod tests {
     fn create_table_with_an_unknown_engine_names_it() {
         let dir = temp_dir("unknown-engine");
         let store = Store::open(&dir, StoreOptions::default()).unwrap();
-        let err = store.create_table(&table(), "nope", schema()).unwrap_err();
+        let err = store
+            .create_table(TableSpec::new(table(), schema()).engine("nope"))
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope"), "{msg}");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -684,13 +701,13 @@ mod tests {
     #[cfg_attr(miri, ignore)] // touches the real filesystem
     fn a_planted_orphan_is_removed_on_reopen() {
         let dir = temp_dir("orphans");
+        let table_dir;
         {
             let store = open(&dir, StoreOptions::default());
             store.write(&table(), batch(0, 1)).unwrap();
+            table_dir = store.snapshot().table(&table()).unwrap().dir();
         }
-        let orphan = dir
-            .join("d")
-            .join("t")
+        let orphan = crate::storage::manifest::Manifest::table_dir(&dir, &table_dir)
             .join("_")
             .join("ffffffffffffff00.seg");
         std::fs::write(&orphan, b"junk").unwrap();
@@ -766,6 +783,55 @@ mod tests {
         .unwrap();
         let err = store.write(&table(), bad).unwrap_err();
         assert!(matches!(err, Error::SchemaMismatch { .. }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn order_by_sorts_at_flush_and_a_compaction_merge_resorts() {
+        let dir = temp_dir("order-by");
+        let opts = StoreOptions {
+            compact_min_inputs: 2,
+            compact_small_rows: 100,
+            ..StoreOptions::default()
+        };
+        let store = Store::open(&dir, opts).unwrap();
+        let name = TableName::new("d", "ordered");
+        let fields = vec![Field {
+            name: "a".to_string(),
+            ty: DataType::Int64,
+        }];
+        store
+            .create_table(TableSpec::new(name.clone(), fields.clone()).order_by(["a"]))
+            .unwrap();
+        let int_batch = |vals: &[i64]| {
+            let values: Vec<Value> = vals.iter().map(|&v| Value::Int64(v)).collect();
+            Batch::new(
+                fields.clone(),
+                vec![Column::from_values(&DataType::Int64, &values).unwrap()],
+            )
+            .unwrap()
+        };
+        // Each `write` waits for its own flush to finish before returning, so these two land
+        // in separate segments, each sorted on its own.
+        store.write(&name, int_batch(&[3, 1])).unwrap();
+        store.write(&name, int_batch(&[2])).unwrap();
+
+        assert!(store.compact(&name).unwrap().is_some());
+
+        let rows: Vec<i64> = store
+            .snapshot()
+            .scan(&name)
+            .unwrap()
+            .iter()
+            .flat_map(|b| {
+                (0..b.rows()).map(|i| match b.column(0).get(i) {
+                    Value::Int64(n) => n,
+                    other => panic!("expected Int64, got {other:?}"),
+                })
+            })
+            .collect();
+        assert_eq!(rows, vec![1, 2, 3]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -71,6 +71,13 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         return Ok(None);
     }
 
+    // Compaction output always lands under the table's *current* directory, never its inputs':
+    // a legacy table's segments therefore migrate to the id layout as they are compacted.
+    let fields = entry.fields();
+    let dir = entry.dir();
+    let field_ids: Vec<crate::storage::manifest::FieldId> =
+        entry.schema.iter().map(|f| f.id).collect();
+
     let mut removes = Vec::new();
     let mut adds = Vec::new();
     for plan in &plans {
@@ -85,15 +92,11 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         let mut inputs = Vec::with_capacity(plan.inputs.len());
         for &id in &plan.inputs {
             let seg = entry.segments.iter().find(|s| s.id == id).unwrap();
-            inputs.push(read_segment(&shared.root, table, seg)?);
+            inputs.push(read_segment(&shared.root, seg)?);
         }
-        let outputs = engine.merge(&entry.schema, inputs, shared.opts.max_rows)?;
+        let outputs = engine.merge(entry, inputs, shared.opts.max_rows)?;
 
-        let partition_dir = shared
-            .root
-            .join(&table.db)
-            .join(&table.name)
-            .join(&plan.partition);
+        let partition_dir = Manifest::table_dir(&shared.root, &dir).join(&plan.partition);
         shared
             .io
             .create_dir_all(&partition_dir)
@@ -101,10 +104,10 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         for output in outputs {
             let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
             let opts = WriterOptions {
-                indexes: engine.indexes(&entry.schema),
+                indexes: engine.indexes(&fields),
                 ..Default::default()
             };
-            let mut writer = segment::Writer::new(Vec::new(), entry.schema.clone(), opts)?;
+            let mut writer = segment::Writer::new(Vec::new(), fields.clone(), opts)?;
             for b in &output {
                 writer.push(b)?;
             }
@@ -118,8 +121,10 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
                 footer_crc: meta.footer_crc,
                 columns: meta.columns,
                 side_files: Vec::new(),
+                dir: dir.clone(),
+                field_ids: field_ids.clone(),
             };
-            let path = Manifest::segment_path(&shared.root, table, &seg);
+            let path = Manifest::segment_path(&shared.root, &seg);
             let file = shared
                 .io
                 .write_new(&path, &bytes)
@@ -168,7 +173,8 @@ pub(crate) fn commit(shared: &Arc<Shared>, prepared: Prepared) -> Result<u64, Er
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::storage::{Store, StoreOptions};
+    use crate::storage::manifest::{FieldId, SchemaField, TableId};
+    use crate::storage::{Store, StoreOptions, TableSpec};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
 
@@ -201,18 +207,33 @@ mod tests {
     fn open(dir: &std::path::Path, opts: StoreOptions) -> Store {
         let store = Store::open(dir, opts).unwrap();
         store
-            .create_table(&TableName::new("d", "t"), "append", schema())
+            .create_table(TableSpec::new(TableName::new("d", "t"), schema()))
             .unwrap();
         store
+    }
+
+    fn schema_field(id: u64, f: &Field) -> SchemaField {
+        SchemaField {
+            id: FieldId(id),
+            field: f.clone(),
+        }
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // touches the real filesystem
     fn validate_merge_rejects_a_plan_straddling_a_tombstone() {
         let table = TableEntry {
+            id: TableId(1),
             name: TableName::new("d", "t"),
             engine: "append".to_string(),
-            schema: schema(),
+            schema: schema().iter().map(|f| schema_field(1, f)).collect(),
+            next_field_id: 2,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: std::collections::BTreeMap::new(),
             segments: (1..=3)
                 .chain(5..=6)
                 .map(|id| SegmentEntry {
@@ -224,6 +245,8 @@ mod tests {
                     footer_crc: 0,
                     columns: vec![],
                     side_files: vec![],
+                    dir: "d/0000000000000001".to_string(),
+                    field_ids: vec![FieldId(1)],
                 })
                 .collect(),
             tombstones: vec![crate::storage::manifest::Tombstone {

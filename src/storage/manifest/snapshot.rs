@@ -39,7 +39,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::manifest::{Commit, Edit};
+    use crate::storage::manifest::{Commit, Edit, TableSpec};
 
     #[test]
     fn names_segment_reflects_the_wrapped_manifest() {
@@ -48,9 +48,7 @@ mod tests {
         let with_table = Commit {
             base: 0,
             edits: vec![Edit::CreateTable {
-                name: table.clone(),
-                engine: "append".to_string(),
-                schema: vec![],
+                spec: TableSpec::new(table.clone(), vec![]),
             }],
         }
         .apply(&empty, 0)

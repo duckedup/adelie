@@ -1,6 +1,9 @@
-//! Manifest v1 codec (SPEC §5, §18, D0009): `ADLMAN` header, three length-prefixed body
+//! Manifest v1 codec (SPEC §5, §18, D0009, D0012): `ADLMAN` header, three length-prefixed body
 //! records, then the segment format's own CRC32C trailer framing. Every record is
 //! length-prefixed, so a reader ignores fields it doesn't know and new fields are additive.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 use crate::exec::{ColumnStats, Field};
 use crate::storage::segment::wire::{Cursor, Sink};
@@ -9,8 +12,8 @@ use crate::types::DataType;
 
 use super::error::Error;
 use super::{
-    CmpOp, Garbage, Manifest, Predicate, SegmentEntry, SideFile, TableEntry, TableName, Tombstone,
-    is_path_component,
+    CmpOp, FieldId, Garbage, Manifest, PartitionBy, Predicate, SchemaField, SegmentEntry, SideFile,
+    TableEntry, TableId, TableName, Tombstone, Ttl, is_path_component,
 };
 
 const MANIFEST_MAGIC: [u8; 6] = *b"ADLMAN";
@@ -61,12 +64,13 @@ pub(crate) fn decode(path: &str, bytes: &[u8]) -> Result<Manifest, Error> {
 
 fn decode_body(path: &str, body: &[u8]) -> Result<Manifest, Error> {
     let mut cur = Cursor::new(body);
-    let (version, next_segment_id) = decode_header_fields(&mut cur, path)?;
+    let (version, next_segment_id, next_table_id) = decode_header_fields(&mut cur, path)?;
     let tables = decode_tables(&mut cur, path)?;
     let garbage = decode_garbage(&mut cur, path)?;
     Ok(Manifest {
         version,
         next_segment_id,
+        next_table_id,
         tables,
         garbage,
     })
@@ -119,13 +123,19 @@ fn corrupt(path: &str, e: DecodeError) -> Error {
 fn encode_header_fields(m: &Manifest, out: &mut Sink) {
     out.uvarint(m.version);
     out.uvarint(m.next_segment_id);
+    out.uvarint(m.next_table_id);
 }
 
-fn decode_header_fields(cur: &mut Cursor, path: &str) -> Result<(u64, u64), Error> {
+fn decode_header_fields(cur: &mut Cursor, path: &str) -> Result<(u64, u64, u64), Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let version = body.uvarint().map_err(|e| corrupt(path, e))?;
     let next_segment_id = body.uvarint().map_err(|e| corrupt(path, e))?;
-    Ok((version, next_segment_id))
+    let next_table_id = if body.is_empty() {
+        0
+    } else {
+        body.uvarint().map_err(|e| corrupt(path, e))?
+    };
+    Ok((version, next_segment_id, next_table_id))
 }
 
 // ── tables ───────────────────────────────────────────────────────────────
@@ -144,6 +154,7 @@ fn encode_table_entry(t: &TableEntry, out: &mut Sink) {
     out.record(|r| encode_schema(&t.schema, r));
     out.record(|r| encode_segments(&t.segments, &t.schema, r));
     out.record(|r| encode_tombstones(&t.tombstones, &t.schema, r));
+    out.record(|r| encode_definition(t, r));
 }
 
 fn decode_tables(cur: &mut Cursor, path: &str) -> Result<Vec<TableEntry>, Error> {
@@ -167,28 +178,173 @@ fn decode_table_entry(cur: &mut Cursor, path: &str) -> Result<TableEntry, Error>
     let schema = decode_schema(&mut body, path)?;
     let segments = decode_segments(&mut body, &schema, path)?;
     let tombstones = decode_tombstones(&mut body, &schema, path)?;
+    let def = decode_definition(&mut body, path)?;
     Ok(TableEntry {
+        id: def.id,
         name: TableName::new(db, name),
         engine,
         schema,
+        next_field_id: def.next_field_id,
+        key: def.key,
+        version: def.version,
+        order_by: def.order_by,
+        partition_by: def.partition_by,
+        ttl: def.ttl,
+        options: def.options,
         segments,
         tombstones,
     })
 }
 
-// ── schema (mirrors segment::footer's encode_schema/decode_schema) ─────────
+// ── definition: id, next_field_id, KEY, VERSION, ORDER BY, PARTITION BY, TTL, WITH (D0012) ──
+// Trailing on the table-entry record as a whole: absent (an old manifest's record ends right
+// after tombstones) decodes as `Definition::absent()` — id 0, everything else empty/`None`.
 
-fn encode_schema(fields: &[Field], out: &mut Sink) {
+struct Definition {
+    id: TableId,
+    next_field_id: u64,
+    key: Vec<FieldId>,
+    version: Option<FieldId>,
+    order_by: Vec<FieldId>,
+    partition_by: Option<PartitionBy>,
+    ttl: Option<Ttl>,
+    options: BTreeMap<String, String>,
+}
+
+impl Definition {
+    fn absent() -> Definition {
+        Definition {
+            id: TableId(0),
+            next_field_id: 0,
+            key: Vec::new(),
+            version: None,
+            order_by: Vec::new(),
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
+        }
+    }
+}
+
+fn encode_definition(t: &TableEntry, out: &mut Sink) {
+    out.uvarint(t.id.0);
+    out.uvarint(t.next_field_id);
+    encode_field_id_list(&t.key, out);
+    match t.version {
+        Some(id) => {
+            out.u8(1);
+            out.uvarint(id.0);
+        }
+        None => out.u8(0),
+    }
+    encode_field_id_list(&t.order_by, out);
+    match &t.partition_by {
+        Some(p) => {
+            out.u8(1);
+            out.uvarint(p.column.0);
+            out.uvarint(p.bucket.as_nanos() as u64);
+        }
+        None => out.u8(0),
+    }
+    match &t.ttl {
+        Some(ttl) => {
+            out.u8(1);
+            out.uvarint(ttl.column.0);
+            out.uvarint(ttl.after.as_nanos() as u64);
+        }
+        None => out.u8(0),
+    }
+    out.uvarint(t.options.len() as u64);
+    for (k, v) in &t.options {
+        out.str(k);
+        out.str(v);
+    }
+}
+
+fn encode_field_id_list(ids: &[FieldId], out: &mut Sink) {
+    out.uvarint(ids.len() as u64);
+    for id in ids {
+        out.uvarint(id.0);
+    }
+}
+
+fn decode_field_id_list(cur: &mut Cursor, path: &str) -> Result<Vec<FieldId>, Error> {
+    let n = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = cur.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(FieldId(cur.uvarint().map_err(|e| corrupt(path, e))?));
+    }
+    Ok(out)
+}
+
+fn decode_definition(cur: &mut Cursor, path: &str) -> Result<Definition, Error> {
+    if cur.is_empty() {
+        return Ok(Definition::absent());
+    }
+    let mut body = cur.record().map_err(|e| corrupt(path, e))?;
+    let id = body.uvarint().map_err(|e| corrupt(path, e))?;
+    if id == 0 {
+        return Err(corrupt_str(path, "table id is present but zero"));
+    }
+    let next_field_id = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let key = decode_field_id_list(&mut body, path)?;
+    let version = match body.u8().map_err(|e| corrupt(path, e))? {
+        0 => None,
+        1 => Some(FieldId(body.uvarint().map_err(|e| corrupt(path, e))?)),
+        other => return Err(corrupt_str(path, &format!("bad VERSION tag {other}"))),
+    };
+    let order_by = decode_field_id_list(&mut body, path)?;
+    let partition_by = match body.u8().map_err(|e| corrupt(path, e))? {
+        0 => None,
+        1 => Some(PartitionBy {
+            column: FieldId(body.uvarint().map_err(|e| corrupt(path, e))?),
+            bucket: Duration::from_nanos(body.uvarint().map_err(|e| corrupt(path, e))?),
+        }),
+        other => return Err(corrupt_str(path, &format!("bad PARTITION BY tag {other}"))),
+    };
+    let ttl = match body.u8().map_err(|e| corrupt(path, e))? {
+        0 => None,
+        1 => Some(Ttl {
+            column: FieldId(body.uvarint().map_err(|e| corrupt(path, e))?),
+            after: Duration::from_nanos(body.uvarint().map_err(|e| corrupt(path, e))?),
+        }),
+        other => return Err(corrupt_str(path, &format!("bad TTL tag {other}"))),
+    };
+    let n = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = body.guard_len(n, 2).map_err(|e| corrupt(path, e))?;
+    let mut options = BTreeMap::new();
+    for _ in 0..n {
+        let k = body.str().map_err(|e| corrupt(path, e))?.to_string();
+        let v = body.str().map_err(|e| corrupt(path, e))?.to_string();
+        options.insert(k, v);
+    }
+    Ok(Definition {
+        id: TableId(id),
+        next_field_id,
+        key,
+        version,
+        order_by,
+        partition_by,
+        ttl,
+        options,
+    })
+}
+
+// ── schema (mirrors segment::footer's encode_schema/decode_schema, plus a trailing field id) ──
+
+fn encode_schema(fields: &[SchemaField], out: &mut Sink) {
     out.uvarint(fields.len() as u64);
     for f in fields {
         out.record(|r| {
-            r.str(&f.name);
-            type_id::encode_type(&f.ty, r);
+            r.str(&f.field.name);
+            type_id::encode_type(&f.field.ty, r);
+            r.uvarint(f.id.0);
         });
     }
 }
 
-fn decode_schema(cur: &mut Cursor, path: &str) -> Result<Vec<Field>, Error> {
+fn decode_schema(cur: &mut Cursor, path: &str) -> Result<Vec<SchemaField>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let n = body.uvarint().map_err(|e| corrupt(path, e))?;
     let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
@@ -197,14 +353,26 @@ fn decode_schema(cur: &mut Cursor, path: &str) -> Result<Vec<Field>, Error> {
         let mut fr = body.record().map_err(|e| corrupt(path, e))?;
         let name = fr.str().map_err(|e| corrupt(path, e))?.to_string();
         let ty = type_id::decode_type(&mut fr).map_err(|e| corrupt(path, e))?;
-        fields.push(Field { name, ty });
+        let id = if fr.is_empty() {
+            0
+        } else {
+            let raw = fr.uvarint().map_err(|e| corrupt(path, e))?;
+            if raw == 0 {
+                return Err(corrupt_str(path, "field id is present but zero"));
+            }
+            raw
+        };
+        fields.push(SchemaField {
+            id: FieldId(id),
+            field: Field { name, ty },
+        });
     }
     Ok(fields)
 }
 
 // ── segments ─────────────────────────────────────────────────────────────
 
-fn encode_segments(segments: &[SegmentEntry], schema: &[Field], out: &mut Sink) {
+fn encode_segments(segments: &[SegmentEntry], schema: &[SchemaField], out: &mut Sink) {
     out.uvarint(segments.len() as u64);
     for s in segments {
         out.record(|r| encode_segment(s, schema, r));
@@ -213,7 +381,7 @@ fn encode_segments(segments: &[SegmentEntry], schema: &[Field], out: &mut Sink) 
 
 fn decode_segments(
     cur: &mut Cursor,
-    schema: &[Field],
+    schema: &[SchemaField],
     path: &str,
 ) -> Result<Vec<SegmentEntry>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
@@ -226,7 +394,7 @@ fn decode_segments(
     Ok(out)
 }
 
-fn encode_segment(s: &SegmentEntry, schema: &[Field], out: &mut Sink) {
+fn encode_segment(s: &SegmentEntry, schema: &[SchemaField], out: &mut Sink) {
     out.uvarint(s.id);
     out.str(&s.partition);
     out.uvarint(s.seq);
@@ -235,9 +403,15 @@ fn encode_segment(s: &SegmentEntry, schema: &[Field], out: &mut Sink) {
     out.u32(s.footer_crc);
     out.record(|r| encode_columns(&s.columns, schema, r));
     out.record(|r| encode_side_files(&s.side_files, r));
+    out.str(&s.dir);
+    out.record(|r| encode_field_id_list(&s.field_ids, r));
 }
 
-fn decode_segment(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<SegmentEntry, Error> {
+fn decode_segment(
+    cur: &mut Cursor,
+    schema: &[SchemaField],
+    path: &str,
+) -> Result<SegmentEntry, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let id = body.uvarint().map_err(|e| corrupt(path, e))?;
     let partition = body.str().map_err(|e| corrupt(path, e))?.to_string();
@@ -248,6 +422,21 @@ fn decode_segment(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Segm
     let footer_crc = body.u32().map_err(|e| corrupt(path, e))?;
     let columns = decode_columns(&mut body, schema, path)?;
     let side_files = decode_side_files(&mut body, path)?;
+    let dir = if body.is_empty() {
+        String::new()
+    } else {
+        let d = body.str().map_err(|e| corrupt(path, e))?.to_string();
+        for part in d.split('/') {
+            check_component(path, part)?;
+        }
+        d
+    };
+    let field_ids = if body.is_empty() {
+        Vec::new()
+    } else {
+        let mut fr = body.record().map_err(|e| corrupt(path, e))?;
+        decode_field_id_list(&mut fr, path)?
+    };
     Ok(SegmentEntry {
         id,
         partition,
@@ -257,12 +446,14 @@ fn decode_segment(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Segm
         footer_crc,
         columns,
         side_files,
+        dir,
+        field_ids,
     })
 }
 
 // ── columns (segment-wide ColumnStats, one per schema field) ───────────────
 
-fn encode_columns(columns: &[ColumnStats], schema: &[Field], out: &mut Sink) {
+fn encode_columns(columns: &[ColumnStats], schema: &[SchemaField], out: &mut Sink) {
     debug_assert_eq!(
         columns.len(),
         schema.len(),
@@ -274,12 +465,12 @@ fn encode_columns(columns: &[ColumnStats], schema: &[Field], out: &mut Sink) {
             r.uvarint(c.rows as u64);
             r.uvarint(c.null_count as u64);
             // LIST has no value codec (segment::value), so its stats are always absent.
-            if matches!(field.ty, DataType::List(_)) {
-                value::encode_opt(None, &field.ty, r);
-                value::encode_opt(None, &field.ty, r);
+            if matches!(field.field.ty, DataType::List(_)) {
+                value::encode_opt(None, &field.field.ty, r);
+                value::encode_opt(None, &field.field.ty, r);
             } else {
-                value::encode_opt(c.min.as_ref(), &field.ty, r);
-                value::encode_opt(c.max.as_ref(), &field.ty, r);
+                value::encode_opt(c.min.as_ref(), &field.field.ty, r);
+                value::encode_opt(c.max.as_ref(), &field.field.ty, r);
             }
         });
     }
@@ -287,7 +478,7 @@ fn encode_columns(columns: &[ColumnStats], schema: &[Field], out: &mut Sink) {
 
 fn decode_columns(
     cur: &mut Cursor,
-    schema: &[Field],
+    schema: &[SchemaField],
     path: &str,
 ) -> Result<Vec<ColumnStats>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
@@ -307,8 +498,8 @@ fn decode_columns(
         let mut cr = body.record().map_err(|e| corrupt(path, e))?;
         let rows = cr.uvarint().map_err(|e| corrupt(path, e))? as usize;
         let null_count = cr.uvarint().map_err(|e| corrupt(path, e))? as usize;
-        let min = value::decode_opt(&mut cr, &field.ty).map_err(|e| corrupt(path, e))?;
-        let max = value::decode_opt(&mut cr, &field.ty).map_err(|e| corrupt(path, e))?;
+        let min = value::decode_opt(&mut cr, &field.field.ty).map_err(|e| corrupt(path, e))?;
+        let max = value::decode_opt(&mut cr, &field.field.ty).map_err(|e| corrupt(path, e))?;
         out.push(ColumnStats {
             rows,
             null_count,
@@ -349,7 +540,7 @@ fn decode_side_files(cur: &mut Cursor, path: &str) -> Result<Vec<SideFile>, Erro
 
 // ── tombstones ───────────────────────────────────────────────────────────
 
-fn encode_tombstones(tombstones: &[Tombstone], schema: &[Field], out: &mut Sink) {
+fn encode_tombstones(tombstones: &[Tombstone], schema: &[SchemaField], out: &mut Sink) {
     out.uvarint(tombstones.len() as u64);
     for t in tombstones {
         out.record(|r| encode_tombstone(t, schema, r));
@@ -358,7 +549,7 @@ fn encode_tombstones(tombstones: &[Tombstone], schema: &[Field], out: &mut Sink)
 
 fn decode_tombstones(
     cur: &mut Cursor,
-    schema: &[Field],
+    schema: &[SchemaField],
     path: &str,
 ) -> Result<Vec<Tombstone>, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
@@ -371,7 +562,7 @@ fn decode_tombstones(
     Ok(out)
 }
 
-fn encode_tombstone(t: &Tombstone, schema: &[Field], out: &mut Sink) {
+fn encode_tombstone(t: &Tombstone, schema: &[SchemaField], out: &mut Sink) {
     out.uvarint(t.seq);
     out.uvarint(t.predicates.len() as u64);
     for p in &t.predicates {
@@ -379,7 +570,11 @@ fn encode_tombstone(t: &Tombstone, schema: &[Field], out: &mut Sink) {
     }
 }
 
-fn decode_tombstone(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Tombstone, Error> {
+fn decode_tombstone(
+    cur: &mut Cursor,
+    schema: &[SchemaField],
+    path: &str,
+) -> Result<Tombstone, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let seq = body.uvarint().map_err(|e| corrupt(path, e))?;
     let n = body.uvarint().map_err(|e| corrupt(path, e))?;
@@ -391,32 +586,40 @@ fn decode_tombstone(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<To
     Ok(Tombstone { seq, predicates })
 }
 
-fn encode_predicate(p: &Predicate, schema: &[Field], out: &mut Sink) {
+fn encode_predicate(p: &Predicate, schema: &[SchemaField], out: &mut Sink) {
     out.str(&p.column);
     out.u8(cmp_op_id(p.op));
     // Validated against `schema` at `Commit::apply` time: every live predicate names a real
     // column, so this always finds one.
     let ty = &schema
         .iter()
-        .find(|f| f.name == p.column)
+        .find(|f| f.field.name == p.column)
         .expect("predicate column in schema")
+        .field
         .ty;
     value::encode_value(&p.value, ty, out);
 }
 
-fn decode_predicate(cur: &mut Cursor, schema: &[Field], path: &str) -> Result<Predicate, Error> {
+fn decode_predicate(
+    cur: &mut Cursor,
+    schema: &[SchemaField],
+    path: &str,
+) -> Result<Predicate, Error> {
     let mut body = cur.record().map_err(|e| corrupt(path, e))?;
     let column = body.str().map_err(|e| corrupt(path, e))?.to_string();
     let op_byte = body.u8().map_err(|e| corrupt(path, e))?;
     let op = cmp_op_from_id(op_byte)
         .ok_or_else(|| corrupt_str(path, &format!("unknown comparison op {op_byte}")))?;
-    let field = schema.iter().find(|f| f.name == column).ok_or_else(|| {
-        corrupt_str(
-            path,
-            &format!("tombstone predicate names unknown column {column}"),
-        )
-    })?;
-    let value = value::decode_value(&mut body, &field.ty).map_err(|e| corrupt(path, e))?;
+    let field = schema
+        .iter()
+        .find(|f| f.field.name == column)
+        .ok_or_else(|| {
+            corrupt_str(
+                path,
+                &format!("tombstone predicate names unknown column {column}"),
+            )
+        })?;
+    let value = value::decode_value(&mut body, &field.field.ty).map_err(|e| corrupt(path, e))?;
     Ok(Predicate { column, op, value })
 }
 
@@ -453,7 +656,7 @@ fn encode_garbage(m: &Manifest, out: &mut Sink) {
             r.str(&g.table.name);
             r.uvarint(g.removed_at_ms);
             // No schema is available for a garbage entry's own table, so it carries no column
-            // stats: id, partition, seq and rows are all a garbage-collector needs.
+            // stats: id, partition, seq, rows and dir are all a garbage-collector needs.
             r.record(|sr| encode_segment(&g.segment, &[], sr));
         });
     }
@@ -495,6 +698,7 @@ pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
                 tr.record(|sr| encode_schema(&t.schema, sr));
                 tr.record(|sr| encode_segments_with_extra(&t.segments, &t.schema, sr, i == 0));
                 tr.record(|sr| encode_tombstones(&t.tombstones, &t.schema, sr));
+                tr.record(|sr| encode_definition(t, sr));
             });
         }
     });
@@ -514,7 +718,7 @@ pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
 #[cfg(test)]
 fn encode_segments_with_extra(
     segments: &[SegmentEntry],
-    schema: &[Field],
+    schema: &[SchemaField],
     out: &mut Sink,
     add_extra: bool,
 ) {
@@ -529,30 +733,103 @@ fn encode_segments_with_extra(
     }
 }
 
+/// Test-only: exactly the D0009 layout (no `next_table_id`, no per-field id, no `definition`
+/// record, no segment `dir`/`field_ids`) — what `codec::decode` must read as absence and
+/// `Manifest::decode`'s backfill must derive deterministically.
+#[cfg(test)]
+fn encode_pre_d0012(m: &Manifest) -> Vec<u8> {
+    let mut body = Sink::new();
+    body.record(|r| {
+        r.uvarint(m.version);
+        r.uvarint(m.next_segment_id);
+    });
+    body.record(|r| {
+        r.uvarint(m.tables.len() as u64);
+        for t in &m.tables {
+            r.record(|tr| {
+                tr.str(&t.name.db);
+                tr.str(&t.name.name);
+                tr.str(&t.engine);
+                tr.record(|sr| {
+                    sr.uvarint(t.schema.len() as u64);
+                    for f in &t.schema {
+                        sr.record(|fr| {
+                            fr.str(&f.field.name);
+                            type_id::encode_type(&f.field.ty, fr);
+                        });
+                    }
+                });
+                tr.record(|sr| encode_segments_pre_d0012(&t.segments, &t.schema, sr));
+                tr.record(|sr| encode_tombstones(&t.tombstones, &t.schema, sr));
+            });
+        }
+    });
+    body.record(|r| encode_garbage_pre_d0012(m, r));
+    let body = body.into_vec();
+
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
+    out.extend_from_slice(&MANIFEST_MAGIC);
+    out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
+    out
+}
+
+#[cfg(test)]
+fn encode_segments_pre_d0012(segments: &[SegmentEntry], schema: &[SchemaField], out: &mut Sink) {
+    out.uvarint(segments.len() as u64);
+    for s in segments {
+        out.record(|r| encode_segment_pre_d0012(s, schema, r));
+    }
+}
+
+#[cfg(test)]
+fn encode_segment_pre_d0012(s: &SegmentEntry, schema: &[SchemaField], out: &mut Sink) {
+    out.uvarint(s.id);
+    out.str(&s.partition);
+    out.uvarint(s.seq);
+    out.uvarint(s.rows);
+    out.uvarint(s.bytes);
+    out.u32(s.footer_crc);
+    out.record(|r| encode_columns(&s.columns, schema, r));
+    out.record(|r| encode_side_files(&s.side_files, r));
+}
+
+#[cfg(test)]
+fn encode_garbage_pre_d0012(m: &Manifest, out: &mut Sink) {
+    out.uvarint(m.garbage.len() as u64);
+    for g in &m.garbage {
+        out.record(|r| {
+            r.str(&g.table.db);
+            r.str(&g.table.name);
+            r.uvarint(g.removed_at_ms);
+            r.record(|sr| encode_segment_pre_d0012(&g.segment, &[], sr));
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{Decimal, Ip, Value};
     use std::net::IpAddr;
 
-    fn schema() -> Vec<Field> {
+    fn field(id: u64, name: &str, ty: DataType) -> SchemaField {
+        SchemaField {
+            id: FieldId(id),
+            field: Field {
+                name: name.to_string(),
+                ty,
+            },
+        }
+    }
+
+    fn schema() -> Vec<SchemaField> {
         vec![
-            Field {
-                name: "i".to_string(),
-                ty: DataType::Int64,
-            },
-            Field {
-                name: "s".to_string(),
-                ty: DataType::String,
-            },
-            Field {
-                name: "d".to_string(),
-                ty: DataType::decimal(10, 2).unwrap(),
-            },
-            Field {
-                name: "l".to_string(),
-                ty: DataType::list(DataType::Int64).unwrap(),
-            },
+            field(3, "i", DataType::Int64),
+            field(5, "s", DataType::String),
+            field(8, "d", DataType::decimal(10, 2).unwrap()),
+            field(9, "l", DataType::list(DataType::Int64).unwrap()),
         ]
     }
 
@@ -591,14 +868,33 @@ mod tests {
                 },
             ],
             side_files: Vec::new(),
+            dir: "d/0000000000000007".to_string(),
+            field_ids: vec![FieldId(3), FieldId(5), FieldId(8), FieldId(9)],
         }
     }
 
     fn sample_manifest() -> Manifest {
+        let mut options = BTreeMap::new();
+        options.insert("retention".to_string(), "30d".to_string());
+        options.insert("compression".to_string(), "zstd".to_string());
         let table_a = TableEntry {
+            id: TableId(7),
             name: TableName::new("d", "a"),
             engine: "append".to_string(),
             schema: schema(),
+            next_field_id: 12,
+            key: vec![FieldId(3)],
+            version: Some(FieldId(5)),
+            order_by: vec![FieldId(3), FieldId(5)],
+            partition_by: Some(PartitionBy {
+                column: FieldId(5),
+                bucket: Duration::from_secs(3600),
+            }),
+            ttl: Some(Ttl {
+                column: FieldId(5),
+                after: Duration::from_secs(86_400 * 30),
+            }),
+            options,
             segments: vec![segment(1, 1), segment(2, 2)],
             tombstones: vec![Tombstone {
                 seq: 3,
@@ -617,18 +913,24 @@ mod tests {
             }],
         };
         let table_b = TableEntry {
+            id: TableId(2),
             name: TableName::new("d", "b"),
             engine: "append".to_string(),
-            schema: vec![Field {
-                name: "ip".to_string(),
-                ty: DataType::Ip,
-            }],
+            schema: vec![field(1, "ip", DataType::Ip)],
+            next_field_id: 2,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
             segments: vec![],
             tombstones: vec![],
         };
         Manifest {
             version: 3,
             next_segment_id: 3,
+            next_table_id: 10,
             tables: vec![table_a, table_b],
             garbage: vec![Garbage {
                 table: TableName::new("d", "a"),
@@ -641,6 +943,8 @@ mod tests {
                     footer_crc: 1,
                     columns: Vec::new(),
                     side_files: Vec::new(),
+                    dir: "d/0000000000000007".to_string(),
+                    field_ids: Vec::new(),
                 },
                 removed_at_ms: 42,
             }],
@@ -648,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_round_trips_a_manifest_with_stats_tombstones_and_garbage() {
+    fn codec_round_trips_a_manifest_with_stats_tombstones_ids_and_garbage() {
         let m = sample_manifest();
         let bytes = m.encode();
         let decoded = Manifest::decode("m", &bytes).unwrap();
@@ -673,6 +977,8 @@ mod tests {
                 max: Some(ip),
             }],
             side_files: Vec::new(),
+            dir: "d/0000000000000002".to_string(),
+            field_ids: vec![FieldId(1)],
         });
         let bytes = m.encode();
         assert_eq!(Manifest::decode("m", &bytes).unwrap(), m);
@@ -702,6 +1008,117 @@ mod tests {
         let bytes = encode_with_extra_segment_field(&m);
         let decoded = Manifest::decode("m", &bytes).unwrap();
         assert_eq!(decoded, m);
+    }
+
+    #[test]
+    fn old_bytes_decode_ids_as_absent_and_manifest_decode_backfills_them() {
+        let raw = pre_d0012_manifest();
+        let bytes = encode_pre_d0012(&raw);
+
+        let plain = decode("m", &bytes).unwrap();
+        assert_eq!(plain.next_table_id, 0);
+        for t in &plain.tables {
+            assert_eq!(t.id, TableId(0));
+            assert_eq!(t.next_field_id, 0);
+            assert!(t.schema.iter().all(|f| f.id == FieldId(0)));
+            for s in &t.segments {
+                assert_eq!(s.dir, "");
+                assert!(s.field_ids.is_empty());
+            }
+        }
+
+        let backfilled = Manifest::decode("m", &bytes).unwrap();
+        let ids: Vec<u64> = backfilled.tables.iter().map(|t| t.id.0).collect();
+        assert_eq!(ids, vec![1, 2], "assigned in name order, never re-using 0");
+        for t in &backfilled.tables {
+            let field_ids: Vec<u64> = t.schema.iter().map(|f| f.id.0).collect();
+            assert_eq!(
+                field_ids,
+                (1..=t.schema.len() as u64).collect::<Vec<_>>(),
+                "assigned in schema order"
+            );
+            let want_dir = format!("{}/{}", t.name.db, t.name.name);
+            for s in &t.segments {
+                assert_eq!(s.dir, want_dir);
+                let want: Vec<FieldId> = t.schema.iter().map(|f| f.id).collect();
+                assert_eq!(s.field_ids, want);
+            }
+        }
+
+        // Deterministic: decoding the same bytes twice gives the same ids.
+        let again = Manifest::decode("m", &bytes).unwrap();
+        assert_eq!(backfilled, again);
+    }
+
+    fn pre_d0012_manifest() -> Manifest {
+        fn unassigned_field(name: &str, ty: DataType) -> SchemaField {
+            SchemaField {
+                id: FieldId(0),
+                field: Field {
+                    name: name.to_string(),
+                    ty,
+                },
+            }
+        }
+        fn unassigned_segment(id: u64, seq: u64) -> SegmentEntry {
+            SegmentEntry {
+                id,
+                partition: "_".to_string(),
+                seq,
+                rows: 1,
+                bytes: 1,
+                footer_crc: 0,
+                columns: vec![ColumnStats {
+                    rows: 1,
+                    null_count: 0,
+                    min: None,
+                    max: None,
+                }],
+                side_files: Vec::new(),
+                dir: String::new(),
+                field_ids: Vec::new(),
+            }
+        }
+        let table_a = TableEntry {
+            id: TableId(0),
+            name: TableName::new("d", "a"),
+            engine: "append".to_string(),
+            schema: vec![unassigned_field("x", DataType::Int64)],
+            next_field_id: 0,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
+            segments: vec![unassigned_segment(1, 1)],
+            tombstones: vec![],
+        };
+        let table_b = TableEntry {
+            id: TableId(0),
+            name: TableName::new("d", "b"),
+            engine: "append".to_string(),
+            schema: vec![
+                unassigned_field("y", DataType::Int64),
+                unassigned_field("z", DataType::Int64),
+            ],
+            next_field_id: 0,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
+            segments: vec![],
+            tombstones: vec![],
+        };
+        Manifest {
+            version: 1,
+            next_segment_id: 2,
+            next_table_id: 0,
+            tables: vec![table_a, table_b],
+            garbage: vec![],
+        }
     }
 
     #[test]
@@ -756,7 +1173,9 @@ mod tests {
         escaped_table.tables[0].name.db = "..".to_string();
         let mut escaped_partition = sample_manifest();
         escaped_partition.tables[0].segments[0].partition = "../x".to_string();
-        for m in [escaped_table, escaped_partition] {
+        let mut escaped_dir = sample_manifest();
+        escaped_dir.tables[0].segments[0].dir = "d/../x".to_string();
+        for m in [escaped_table, escaped_partition, escaped_dir] {
             let r = Manifest::decode("manifest", &m.encode());
             assert!(matches!(r, Err(Error::Corrupt { .. })), "{r:?}");
         }

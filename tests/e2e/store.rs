@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use adelie::exec::{Batch, Column, Field};
 use adelie::storage::manifest::TableName;
-use adelie::storage::{Error, Reader, Store, StoreOptions};
+use adelie::storage::{Error, Reader, Store, StoreOptions, TableSpec};
 use adelie::types::{DataType, Value};
 use adelie_harness::crash::{CrashTarget, Kill, Plan, Row, run};
 
@@ -96,7 +96,9 @@ fn open_with_tables(dir: &Path, tables: &[TableName]) -> io::Result<Store> {
     let existing = store.snapshot();
     for t in tables {
         if existing.table(t).is_none() {
-            store.create_table(t, "append", schema()).map_err(to_io)?;
+            store
+                .create_table(TableSpec::new(t.clone(), schema()))
+                .map_err(to_io)?;
         }
     }
     Ok(store)
@@ -333,7 +335,9 @@ fn multi_table_is_atomic() {
 fn second_writer_is_locked() {
     let dir = temp_dir("second-writer");
     let store = Store::open(&dir, StoreOptions::default()).unwrap();
-    store.create_table(&table(), "append", schema()).unwrap();
+    store
+        .create_table(TableSpec::new(table(), schema()))
+        .unwrap();
 
     assert!(matches!(
         Store::open(&dir, StoreOptions::default()),
@@ -361,7 +365,9 @@ fn buffer_is_queryable_but_not_durable() {
         },
     )
     .unwrap();
-    store.create_table(&table(), "append", schema()).unwrap();
+    store
+        .create_table(TableSpec::new(table(), schema()))
+        .unwrap();
     let store = Arc::new(store);
 
     let rows: Vec<Row> = (0..16u32).map(|i| (0u64, i)).collect();
@@ -427,7 +433,9 @@ fn durable_round_trip() {
     let dir = temp_dir("round-trip");
     {
         let store = Store::open(&dir, opts()).unwrap();
-        store.create_table(&table(), "append", schema()).unwrap();
+        store
+            .create_table(TableSpec::new(table(), schema()))
+            .unwrap();
         for b in 0..5u64 {
             let rows: Vec<Row> = (0..16u32).map(|i| (b, i)).collect();
             store.write(&table(), row_batch(&rows)).unwrap();
@@ -461,7 +469,9 @@ fn compaction_is_safe_for_live_readers() {
         },
     )
     .unwrap();
-    store.create_table(&table(), "append", schema()).unwrap();
+    store
+        .create_table(TableSpec::new(table(), schema()))
+        .unwrap();
 
     for b in 0..4u64 {
         let rows: Vec<Row> = (0..4u32).map(|i| (b, i)).collect();
