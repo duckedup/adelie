@@ -188,7 +188,9 @@ impl TableEntry {
     }
 
     /// The inverse of create, with every id resolved back to its column name: what `SHOW CREATE
-    /// TABLE` prints, and what a reopen compares against the spec it was created with.
+    /// TABLE` prints, and what a reopen compares against the spec it was created with. An ORDER BY
+    /// equal to KEY is SPEC §18's default for a keyed engine, so it is left implicit, as a spec
+    /// that omitted it was written.
     pub fn spec(&self) -> TableSpec {
         let name_of = |id: FieldId| -> String {
             self.field(id)
@@ -202,7 +204,7 @@ impl TableEntry {
         if let Some(v) = self.version {
             spec = spec.version(name_of(v));
         }
-        if !self.order_by.is_empty() {
+        if !self.order_by.is_empty() && self.order_by != self.key {
             spec = spec.order_by(self.order_by.iter().map(|&id| name_of(id)));
         }
         if let Some(p) = &self.partition_by {

@@ -302,6 +302,42 @@ mod tests {
         };
         let out = Append.merge(&ordered, inputs, 10).unwrap();
         assert_eq!(int_rows(&out), vec![1, 3, 7, 9]);
+
+        // Ties on the sort key: `b` tells the rows apart, and the earlier input (lower seq) must
+        // come first, so reversing the inputs at compaction goes red.
+        let b = Field {
+            name: "b".to_string(),
+            ty: DataType::Int64,
+        };
+        let pairs = |rows: &[(i64, i64)]| {
+            let col = |f: fn(&(i64, i64)) -> i64| {
+                let vals: Vec<Value> = rows.iter().map(|r| Value::Int64(f(r))).collect();
+                crate::exec::Column::from_values(&DataType::Int64, &vals).unwrap()
+            };
+            Batch::new(vec![field(), b.clone()], vec![col(|r| r.0), col(|r| r.1)]).unwrap()
+        };
+        let mut two_cols = ordered.clone();
+        two_cols.schema.push(SchemaField {
+            id: FieldId(2),
+            field: b.clone(),
+        });
+        let inputs = vec![
+            vec![pairs(&[(1, 10), (2, 20)])],
+            vec![pairs(&[(0, 5), (1, 11)])],
+        ];
+        let out = Append.merge(&two_cols, inputs, 10).unwrap();
+        let rows: Vec<(Value, Value)> = out
+            .iter()
+            .flatten()
+            .flat_map(|batch| {
+                (0..batch.rows()).map(|i| (batch.column(0).get(i), batch.column(1).get(i)))
+            })
+            .collect();
+        let want: Vec<(Value, Value)> = [(0, 5), (1, 10), (1, 11), (2, 20)]
+            .iter()
+            .map(|&(a, b)| (Value::Int64(a), Value::Int64(b)))
+            .collect();
+        assert_eq!(rows, want);
     }
 
     #[test]

@@ -415,25 +415,27 @@ mod tests {
 
     #[test]
     fn a_keyed_engine_with_no_order_by_stores_order_by_equal_to_key() {
-        let m = Manifest::empty();
+        let created = TableSpec::new(
+            TableName::new("d", "t"),
+            vec![Field {
+                name: "id".to_string(),
+                ty: DataType::Int64,
+            }],
+        )
+        .engine("latest")
+        .key(["id"]);
         let m = Commit {
             base: 0,
             edits: vec![Edit::CreateTable {
-                spec: TableSpec::new(
-                    TableName::new("d", "t"),
-                    vec![Field {
-                        name: "id".to_string(),
-                        ty: DataType::Int64,
-                    }],
-                )
-                .engine("latest")
-                .key(["id"]),
+                spec: created.clone(),
             }],
         }
-        .apply(&m, 0)
+        .apply(&Manifest::empty(), 0)
         .unwrap();
         let entry = m.table(&TableName::new("d", "t")).unwrap();
         assert_eq!(entry.order_by, entry.key);
+        // The stored default reads back as the implicit clause it was written as.
+        assert_eq!(entry.spec(), created);
     }
 
     #[test]

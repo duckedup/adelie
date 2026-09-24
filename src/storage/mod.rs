@@ -137,7 +137,8 @@ pub(crate) fn io_err(path: &Path, source: std::io::Error) -> Error {
 pub struct Store {
     shared: Arc<Shared>,
     flusher: Option<JoinHandle<()>>,
-    _lock: File,
+    /// Held for the store's life; `close_internal` unlocks it explicitly (see there).
+    lock: File,
 }
 
 impl Store {
@@ -202,7 +203,7 @@ impl Store {
         Ok(Store {
             shared,
             flusher: Some(flusher),
-            _lock: lock_file,
+            lock: lock_file,
         })
     }
 
@@ -371,6 +372,11 @@ impl Store {
         if let Some(handle) = self.flusher.take() {
             let _ = handle.join();
         }
+        // Unlock rather than rely on dropping the `File`. The lock belongs to the open file
+        // description, and a child process forked by any thread of this process (before its
+        // exec closes the fd) holds a copy of it, so a close alone can leave the store locked
+        // against the next `open`. An explicit unlock releases it through every copy.
+        let _ = self.lock.unlock();
         flush_result.map(|_| ())
     }
 }
@@ -716,6 +722,22 @@ mod tests {
         assert!(!orphan.exists());
         let view = store.snapshot();
         assert_eq!(view.scan(&table()).unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn a_closed_store_reopens_while_a_copy_of_its_lock_fd_is_still_open() {
+        // `try_clone` dups the fd exactly as a fork inherits it, so this is the concurrent-spawn
+        // race made deterministic: without the explicit unlock in `close`, reopening is Locked.
+        let dir = temp_dir("lock-fd-copy");
+        let store = open(&dir, StoreOptions::default());
+        let inherited = store.lock.try_clone().unwrap();
+        store.close().unwrap();
+        let reopened = Store::open(&dir, StoreOptions::default());
+        assert!(reopened.is_ok(), "{:?}", reopened.err());
+        drop(inherited);
+        drop(reopened);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

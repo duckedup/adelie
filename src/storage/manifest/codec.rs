@@ -179,6 +179,7 @@ fn decode_table_entry(cur: &mut Cursor, path: &str) -> Result<TableEntry, Error>
     let segments = decode_segments(&mut body, &schema, path)?;
     let tombstones = decode_tombstones(&mut body, &schema, path)?;
     let def = decode_definition(&mut body, path)?;
+    check_definition_ids(&def, &schema, path)?;
     Ok(TableEntry {
         id: def.id,
         name: TableName::new(db, name),
@@ -276,6 +277,28 @@ fn decode_field_id_list(cur: &mut Cursor, path: &str) -> Result<Vec<FieldId>, Er
         out.push(FieldId(cur.uvarint().map_err(|e| corrupt(path, e))?));
     }
     Ok(out)
+}
+
+/// Every field id a definition names must be one of its own table's columns: an engine indexes
+/// the schema by these ids, so a dangling one off disk is corrupt, never a panic on the next
+/// write (the same rule `decode_predicate` applies to a tombstone's column).
+fn check_definition_ids(def: &Definition, schema: &[SchemaField], path: &str) -> Result<(), Error> {
+    let named = def
+        .key
+        .iter()
+        .chain(&def.order_by)
+        .chain(&def.version)
+        .chain(def.partition_by.as_ref().map(|p| &p.column))
+        .chain(def.ttl.as_ref().map(|t| &t.column));
+    for id in named {
+        if !schema.iter().any(|f| f.id == *id) {
+            return Err(corrupt_str(
+                path,
+                &format!("table definition names unknown field id {}", id.0),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn decode_definition(cur: &mut Cursor, path: &str) -> Result<Definition, Error> {
@@ -884,10 +907,12 @@ mod tests {
             schema: schema(),
             next_field_id: 12,
             key: vec![FieldId(3)],
-            version: Some(FieldId(5)),
-            order_by: vec![FieldId(3), FieldId(5)],
+            // Every clause names a different column, so a decoder that cross-wires two of them
+            // (or drops one) cannot round-trip.
+            version: Some(FieldId(9)),
+            order_by: vec![FieldId(3), FieldId(8)],
             partition_by: Some(PartitionBy {
-                column: FieldId(5),
+                column: FieldId(8),
                 bucket: Duration::from_secs(3600),
             }),
             ttl: Some(Ttl {
@@ -895,7 +920,12 @@ mod tests {
                 after: Duration::from_secs(86_400 * 30),
             }),
             options,
-            segments: vec![segment(1, 1), segment(2, 2)],
+            // One segment in the id layout and one still in the legacy one: `dir` is per segment.
+            segments: vec![segment(1, 1), {
+                let mut legacy = segment(2, 2);
+                legacy.dir = "d/a".to_string();
+                legacy
+            }],
             tombstones: vec![Tombstone {
                 seq: 3,
                 predicates: vec![
@@ -943,7 +973,7 @@ mod tests {
                     footer_crc: 1,
                     columns: Vec::new(),
                     side_files: Vec::new(),
-                    dir: "d/0000000000000007".to_string(),
+                    dir: "d/legacy-garbage".to_string(),
                     field_ids: Vec::new(),
                 },
                 removed_at_ms: 42,
@@ -1008,6 +1038,30 @@ mod tests {
         let bytes = encode_with_extra_segment_field(&m);
         let decoded = Manifest::decode("m", &bytes).unwrap();
         assert_eq!(decoded, m);
+    }
+
+    #[test]
+    fn a_definition_naming_a_field_id_outside_its_schema_is_corrupt() {
+        // Each clause in turn: an engine indexes the schema by these ids, so a dangling one
+        // must fail decode, not panic the next flush.
+        let dangling = FieldId(99);
+        let cases: [fn(&mut TableEntry, FieldId); 5] = [
+            |t, id| t.key = vec![id],
+            |t, id| t.version = Some(id),
+            |t, id| t.order_by = vec![FieldId(3), id],
+            |t, id| t.partition_by.as_mut().unwrap().column = id,
+            |t, id| t.ttl.as_mut().unwrap().column = id,
+        ];
+        for (i, set) in cases.iter().enumerate() {
+            let mut m = sample_manifest();
+            set(&mut m.tables[0], dangling);
+            match decode("m", &m.encode()) {
+                Err(Error::Corrupt { detail, .. }) => {
+                    assert!(detail.contains("unknown field id 99"), "case {i}: {detail}")
+                }
+                other => panic!("case {i}: expected Corrupt, got {other:?}"),
+            }
+        }
     }
 
     #[test]
