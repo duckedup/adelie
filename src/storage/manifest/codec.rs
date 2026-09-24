@@ -1,6 +1,7 @@
-//! Manifest v1 codec (SPEC §5, §18, D0009, D0012): `ADLMAN` header, three length-prefixed body
-//! records, then the segment format's own CRC32C trailer framing. Every record is
-//! length-prefixed, so a reader ignores fields it doesn't know and new fields are additive.
+//! Manifest v1 codec (SPEC §5, §18, §19, D0009, D0012, D0013): `ADLMAN` header, four
+//! length-prefixed body records, then the segment format's own CRC32C trailer framing. Every
+//! record is length-prefixed, so a reader ignores fields it doesn't know and new fields are
+//! additive.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use crate::storage::segment::{DecodeError, footer, type_id, value};
 use crate::types::DataType;
 
 use super::error::Error;
+use super::lifecycle::{Job, RetireReason, Retired};
 use super::{
     CmpOp, FieldId, Garbage, Manifest, PartitionBy, Predicate, SchemaField, SegmentEntry, SideFile,
     TableEntry, TableId, TableName, Tombstone, Ttl, is_path_component,
@@ -39,6 +41,7 @@ fn encode_body(m: &Manifest) -> Vec<u8> {
     body.record(|r| encode_header_fields(m, r));
     body.record(|r| encode_tables(m, r));
     body.record(|r| encode_garbage(m, r));
+    body.record(|r| encode_lifecycle(m, r));
     body.into_vec()
 }
 
@@ -67,12 +70,20 @@ fn decode_body(path: &str, body: &[u8]) -> Result<Manifest, Error> {
     let (version, next_segment_id, next_table_id) = decode_header_fields(&mut cur, path)?;
     let tables = decode_tables(&mut cur, path)?;
     let garbage = decode_garbage(&mut cur, path)?;
+    let (next_job_id, jobs, retired) = if cur.is_empty() {
+        (1, vec![], vec![])
+    } else {
+        decode_lifecycle(&mut cur, path)?
+    };
     Ok(Manifest {
         version,
         next_segment_id,
         next_table_id,
         tables,
         garbage,
+        next_job_id,
+        jobs,
+        retired,
     })
 }
 
@@ -428,6 +439,7 @@ fn encode_segment(s: &SegmentEntry, schema: &[SchemaField], out: &mut Sink) {
     out.record(|r| encode_side_files(&s.side_files, r));
     out.str(&s.dir);
     out.record(|r| encode_field_id_list(&s.field_ids, r));
+    out.record(|r| encode_field_id_list(&s.file_field_ids, r));
 }
 
 fn decode_segment(
@@ -460,6 +472,26 @@ fn decode_segment(
         let mut fr = body.record().map_err(|e| corrupt(path, e))?;
         decode_field_id_list(&mut fr, path)?
     };
+    let file_field_ids = if body.is_empty() {
+        Vec::new()
+    } else {
+        let mut fr = body.record().map_err(|e| corrupt(path, e))?;
+        let ids = decode_field_id_list(&mut fr, path)?;
+        check_distinct_file_field_ids(path, &ids)?;
+        ids
+    };
+    // `field_ids` pairs with `columns` entry for entry (`project_onto` indexes one by the
+    // other); empty is a legacy segment, backfilled from the schema on open.
+    if !field_ids.is_empty() && field_ids.len() != columns.len() {
+        return Err(corrupt_str(
+            path,
+            &format!(
+                "segment has {} field ids for {} column stats",
+                field_ids.len(),
+                columns.len()
+            ),
+        ));
+    }
     Ok(SegmentEntry {
         id,
         partition,
@@ -471,7 +503,23 @@ fn decode_segment(
         side_files,
         dir,
         field_ids,
+        file_field_ids,
     })
+}
+
+/// Every non-zero id in a segment's `file_field_ids` names one physical file column, so two
+/// entries sharing an id would make a reader unable to tell them apart.
+fn check_distinct_file_field_ids(path: &str, ids: &[FieldId]) -> Result<(), Error> {
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if id.0 != 0 && !seen.insert(id.0) {
+            return Err(corrupt_str(
+                path,
+                &format!("duplicate file field id {} in file_field_ids", id.0),
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ── columns (segment-wide ColumnStats, one per schema field) ───────────────
@@ -707,6 +755,133 @@ fn decode_garbage(cur: &mut Cursor, path: &str) -> Result<Vec<Garbage>, Error> {
     Ok(out)
 }
 
+// ── lifecycle: jobs and retired table entries (SPEC §19, D0012, D0013) ─────
+
+fn encode_lifecycle(m: &Manifest, out: &mut Sink) {
+    out.uvarint(m.next_job_id);
+    out.uvarint(m.jobs.len() as u64);
+    for j in &m.jobs {
+        out.record(|r| encode_job(j, r));
+    }
+    out.uvarint(m.retired.len() as u64);
+    for ret in &m.retired {
+        out.record(|r| encode_retired(ret, r));
+    }
+}
+
+fn decode_lifecycle(cur: &mut Cursor, path: &str) -> Result<(u64, Vec<Job>, Vec<Retired>), Error> {
+    let mut body = cur.record().map_err(|e| corrupt(path, e))?;
+    let next_job_id = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
+    let mut jobs = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut jr = body.record().map_err(|e| corrupt(path, e))?;
+        jobs.push(decode_job(&mut jr, path, next_job_id)?);
+    }
+    let n = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
+    let mut retired = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut rr = body.record().map_err(|e| corrupt(path, e))?;
+        retired.push(decode_retired(&mut rr, path)?);
+    }
+    Ok((next_job_id, jobs, retired))
+}
+
+fn encode_job(j: &Job, out: &mut Sink) {
+    out.uvarint(j.id);
+    out.uvarint(j.source.0);
+    out.uvarint(j.snapshot);
+    out.record(|r| encode_u64_list(&j.handled, r));
+    out.uvarint(j.reused);
+    out.uvarint(j.rewritten);
+    out.record(|r| encode_table_entry(&j.target, r));
+}
+
+fn decode_job(cur: &mut Cursor, path: &str, next_job_id: u64) -> Result<Job, Error> {
+    let id = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    if id == 0 || id >= next_job_id {
+        return Err(corrupt_str(path, &format!("job id {id} is invalid")));
+    }
+    let source = TableId(cur.uvarint().map_err(|e| corrupt(path, e))?);
+    let snapshot = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let mut hr = cur.record().map_err(|e| corrupt(path, e))?;
+    let handled = decode_u64_list(&mut hr, path)?;
+    let reused = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let rewritten = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let target = decode_table_entry(cur, path)?;
+    Ok(Job {
+        id,
+        source,
+        snapshot,
+        target,
+        handled,
+        reused,
+        rewritten,
+    })
+}
+
+fn encode_retired(r: &Retired, out: &mut Sink) {
+    out.u8(retire_reason_id(r.reason));
+    out.uvarint(r.retired_at_ms);
+    out.uvarint(r.version);
+    out.record(|rr| encode_u64_list(&r.successor_segments, rr));
+    out.record(|rr| encode_table_entry(&r.entry, rr));
+}
+
+fn decode_retired(cur: &mut Cursor, path: &str) -> Result<Retired, Error> {
+    let reason_byte = cur.u8().map_err(|e| corrupt(path, e))?;
+    let reason = retire_reason_from_id(reason_byte)
+        .ok_or_else(|| corrupt_str(path, &format!("unknown retire reason {reason_byte}")))?;
+    let retired_at_ms = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let version = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let mut sr = cur.record().map_err(|e| corrupt(path, e))?;
+    let successor_segments = decode_u64_list(&mut sr, path)?;
+    let entry = decode_table_entry(cur, path)?;
+    Ok(Retired {
+        entry,
+        reason,
+        retired_at_ms,
+        version,
+        successor_segments,
+    })
+}
+
+fn retire_reason_id(r: RetireReason) -> u8 {
+    match r {
+        RetireReason::Swapped => 0,
+        RetireReason::Reverted => 1,
+        RetireReason::Dropped => 2,
+    }
+}
+
+fn retire_reason_from_id(id: u8) -> Option<RetireReason> {
+    match id {
+        0 => Some(RetireReason::Swapped),
+        1 => Some(RetireReason::Reverted),
+        2 => Some(RetireReason::Dropped),
+        _ => None,
+    }
+}
+
+fn encode_u64_list(ids: &[u64], out: &mut Sink) {
+    out.uvarint(ids.len() as u64);
+    for &id in ids {
+        out.uvarint(id);
+    }
+}
+
+fn decode_u64_list(cur: &mut Cursor, path: &str) -> Result<Vec<u64>, Error> {
+    let n = cur.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = cur.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(cur.uvarint().map_err(|e| corrupt(path, e))?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
     let mut body = Sink::new();
@@ -831,6 +1006,205 @@ fn encode_garbage_pre_d0012(m: &Manifest, out: &mut Sink) {
     }
 }
 
+/// Test-only: today's format (D0012, before this change) — the `dir`/`field_ids` segment
+/// record with no trailing `file_field_ids`, and no 4th `lifecycle` record — proving a manifest
+/// written before D0013 still decodes.
+#[cfg(test)]
+fn encode_pre_lifecycle(m: &Manifest) -> Vec<u8> {
+    let mut body = Sink::new();
+    body.record(|r| encode_header_fields(m, r));
+    body.record(|r| {
+        r.uvarint(m.tables.len() as u64);
+        for t in &m.tables {
+            r.record(|tr| {
+                tr.str(&t.name.db);
+                tr.str(&t.name.name);
+                tr.str(&t.engine);
+                tr.record(|sr| encode_schema(&t.schema, sr));
+                tr.record(|sr| encode_segments_pre_lifecycle(&t.segments, &t.schema, sr));
+                tr.record(|sr| encode_tombstones(&t.tombstones, &t.schema, sr));
+                tr.record(|sr| encode_definition(t, sr));
+            });
+        }
+    });
+    body.record(|r| encode_garbage_pre_lifecycle(m, r));
+    let body = body.into_vec();
+
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
+    out.extend_from_slice(&MANIFEST_MAGIC);
+    out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
+    out
+}
+
+#[cfg(test)]
+fn encode_segments_pre_lifecycle(
+    segments: &[SegmentEntry],
+    schema: &[SchemaField],
+    out: &mut Sink,
+) {
+    out.uvarint(segments.len() as u64);
+    for s in segments {
+        out.record(|r| encode_segment_pre_lifecycle(s, schema, r));
+    }
+}
+
+#[cfg(test)]
+fn encode_segment_pre_lifecycle(s: &SegmentEntry, schema: &[SchemaField], out: &mut Sink) {
+    out.uvarint(s.id);
+    out.str(&s.partition);
+    out.uvarint(s.seq);
+    out.uvarint(s.rows);
+    out.uvarint(s.bytes);
+    out.u32(s.footer_crc);
+    out.record(|r| encode_columns(&s.columns, schema, r));
+    out.record(|r| encode_side_files(&s.side_files, r));
+    out.str(&s.dir);
+    out.record(|r| encode_field_id_list(&s.field_ids, r));
+}
+
+#[cfg(test)]
+fn encode_garbage_pre_lifecycle(m: &Manifest, out: &mut Sink) {
+    out.uvarint(m.garbage.len() as u64);
+    for g in &m.garbage {
+        out.record(|r| {
+            r.str(&g.table.db);
+            r.str(&g.table.name);
+            r.uvarint(g.removed_at_ms);
+            r.record(|sr| encode_segment_pre_lifecycle(&g.segment, &[], sr));
+        });
+    }
+}
+
+/// Test-only: a `file_field_ids` list with a duplicate non-zero id — bytes a fixed decoder
+/// must reject that `encode_segment` itself can never produce.
+#[cfg(test)]
+fn encode_segment_with_bad_file_field_ids(
+    s: &SegmentEntry,
+    schema: &[SchemaField],
+    out: &mut Sink,
+) {
+    out.uvarint(s.id);
+    out.str(&s.partition);
+    out.uvarint(s.seq);
+    out.uvarint(s.rows);
+    out.uvarint(s.bytes);
+    out.u32(s.footer_crc);
+    out.record(|r| encode_columns(&s.columns, schema, r));
+    out.record(|r| encode_side_files(&s.side_files, r));
+    out.str(&s.dir);
+    out.record(|r| encode_field_id_list(&s.field_ids, r));
+    out.record(|r| {
+        r.uvarint(2);
+        r.uvarint(7);
+        r.uvarint(7);
+    });
+}
+
+/// Test-only: the first table's first segment gets a `file_field_ids` list with a duplicate
+/// non-zero id — bytes `encode_segment` can never itself produce.
+#[cfg(test)]
+fn encode_with_bad_file_field_ids(m: &Manifest) -> Vec<u8> {
+    let mut body = Sink::new();
+    body.record(|r| encode_header_fields(m, r));
+    body.record(|r| {
+        r.uvarint(m.tables.len() as u64);
+        for (i, t) in m.tables.iter().enumerate() {
+            r.record(|tr| {
+                tr.str(&t.name.db);
+                tr.str(&t.name.name);
+                tr.str(&t.engine);
+                tr.record(|sr| encode_schema(&t.schema, sr));
+                tr.record(|sr| {
+                    sr.uvarint(t.segments.len() as u64);
+                    for (j, s) in t.segments.iter().enumerate() {
+                        sr.record(|r2| {
+                            if i == 0 && j == 0 {
+                                encode_segment_with_bad_file_field_ids(s, &t.schema, r2);
+                            } else {
+                                encode_segment(s, &t.schema, r2);
+                            }
+                        });
+                    }
+                });
+                tr.record(|sr| encode_tombstones(&t.tombstones, &t.schema, sr));
+                tr.record(|sr| encode_definition(t, sr));
+            });
+        }
+    });
+    body.record(|r| encode_garbage(m, r));
+    body.record(|r| encode_lifecycle(m, r));
+    let body = body.into_vec();
+
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
+    out.extend_from_slice(&MANIFEST_MAGIC);
+    out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
+    out
+}
+
+/// Test-only: a lifecycle record whose one job has an out-of-range id.
+#[cfg(test)]
+fn encode_with_bad_job_id(m: &Manifest) -> Vec<u8> {
+    let mut body = Sink::new();
+    body.record(|r| encode_header_fields(m, r));
+    body.record(|r| encode_tables(m, r));
+    body.record(|r| encode_garbage(m, r));
+    body.record(|r| {
+        r.uvarint(1); // next_job_id
+        r.uvarint(1); // one job
+        r.record(|jr| {
+            jr.uvarint(0); // invalid: id 0
+            jr.uvarint(1);
+            jr.uvarint(1);
+            jr.record(|hr| encode_u64_list(&[], hr));
+            jr.uvarint(0);
+            jr.uvarint(0);
+            jr.record(|tr| encode_table_entry(&m.tables[0], tr));
+        });
+        r.uvarint(0); // no retired
+    });
+    let body = body.into_vec();
+
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
+    out.extend_from_slice(&MANIFEST_MAGIC);
+    out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
+    out
+}
+
+/// Test-only: a lifecycle record whose one retired entry has an unknown reason byte.
+#[cfg(test)]
+fn encode_with_bad_retire_reason(m: &Manifest) -> Vec<u8> {
+    let mut body = Sink::new();
+    body.record(|r| encode_header_fields(m, r));
+    body.record(|r| encode_tables(m, r));
+    body.record(|r| encode_garbage(m, r));
+    body.record(|r| {
+        r.uvarint(1); // next_job_id
+        r.uvarint(0); // no jobs
+        r.uvarint(1); // one retired entry
+        r.record(|rr| {
+            rr.u8(99); // invalid reason
+            rr.uvarint(1);
+            rr.uvarint(1);
+            rr.record(|sr| encode_u64_list(&[], sr));
+            rr.record(|tr| encode_table_entry(&m.tables[0], tr));
+        });
+    });
+    let body = body.into_vec();
+
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
+    out.extend_from_slice(&MANIFEST_MAGIC);
+    out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+    footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,6 +1267,9 @@ mod tests {
             side_files: Vec::new(),
             dir: "d/0000000000000007".to_string(),
             field_ids: vec![FieldId(3), FieldId(5), FieldId(8), FieldId(9)],
+            // The file's own column order differs from the entry's: exercises the trailing
+            // field in the ordinary round trip, not just the dedicated lifecycle test.
+            file_field_ids: vec![FieldId(9), FieldId(3), FieldId(8), FieldId(5)],
         }
     }
 
@@ -975,9 +1352,13 @@ mod tests {
                     side_files: Vec::new(),
                     dir: "d/legacy-garbage".to_string(),
                     field_ids: Vec::new(),
+                    file_field_ids: Vec::new(),
                 },
                 removed_at_ms: 42,
             }],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         }
     }
 
@@ -1009,6 +1390,7 @@ mod tests {
             side_files: Vec::new(),
             dir: "d/0000000000000002".to_string(),
             field_ids: vec![FieldId(1)],
+            file_field_ids: Vec::new(),
         });
         let bytes = m.encode();
         assert_eq!(Manifest::decode("m", &bytes).unwrap(), m);
@@ -1131,6 +1513,7 @@ mod tests {
                 side_files: Vec::new(),
                 dir: String::new(),
                 field_ids: Vec::new(),
+                file_field_ids: Vec::new(),
             }
         }
         let table_a = TableEntry {
@@ -1172,6 +1555,9 @@ mod tests {
             next_table_id: 0,
             tables: vec![table_a, table_b],
             garbage: vec![],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         }
     }
 
@@ -1240,5 +1626,175 @@ mod tests {
         let m = Manifest::empty();
         let bytes = m.encode();
         assert_eq!(Manifest::decode("m", &bytes).unwrap(), m);
+    }
+
+    // ── lifecycle: jobs, retired entries (SPEC §19, D0012, D0013) ─────────
+
+    fn job_target(id: u64, name: &str) -> TableEntry {
+        TableEntry {
+            id: TableId(id),
+            name: TableName::new("d", name),
+            engine: "append".to_string(),
+            schema: schema(),
+            next_field_id: 12,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
+            segments: vec![],
+            tombstones: vec![],
+        }
+    }
+
+    fn without_file_field_ids(mut m: Manifest) -> Manifest {
+        for t in m.tables.iter_mut() {
+            for s in t.segments.iter_mut() {
+                s.file_field_ids = Vec::new();
+            }
+        }
+        m
+    }
+
+    fn lifecycle_manifest() -> Manifest {
+        let mut m = sample_manifest();
+        // The reused segment's file layout differs from its own view: reordered, plus a
+        // physical column (FieldId(0)) this job's target doesn't read.
+        let mut reused = segment(50, 1);
+        reused.file_field_ids = vec![FieldId(9), FieldId(0), FieldId(3), FieldId(8), FieldId(5)];
+        let mut target_a = job_target(20, "a2");
+        target_a.segments = vec![reused];
+
+        let job1 = Job {
+            id: 1,
+            source: TableId(7),
+            snapshot: 3,
+            target: target_a,
+            handled: vec![1, 2],
+            reused: 1,
+            rewritten: 0,
+        };
+        let job2 = Job {
+            id: 2,
+            source: TableId(2),
+            snapshot: 3,
+            target: job_target(21, "b2"),
+            handled: vec![],
+            reused: 0,
+            rewritten: 1,
+        };
+        m.next_job_id = 3;
+        m.jobs = vec![job1, job2];
+        m.retired = vec![
+            Retired {
+                entry: job_target(30, "r1"),
+                reason: RetireReason::Swapped,
+                retired_at_ms: 1_000,
+                version: 4,
+                successor_segments: vec![10, 11],
+            },
+            Retired {
+                entry: job_target(31, "r2"),
+                reason: RetireReason::Reverted,
+                retired_at_ms: 2_000,
+                version: 5,
+                successor_segments: vec![],
+            },
+            Retired {
+                entry: job_target(32, "r3"),
+                reason: RetireReason::Dropped,
+                retired_at_ms: 3_000,
+                version: 6,
+                successor_segments: vec![],
+            },
+        ];
+        m
+    }
+
+    #[test]
+    fn lifecycle_round_trips_jobs_and_retired_entries() {
+        let m = lifecycle_manifest();
+        let bytes = m.encode();
+        assert_eq!(Manifest::decode("m", &bytes).unwrap(), m);
+    }
+
+    #[test]
+    fn pre_lifecycle_bytes_decode_with_empty_jobs_and_retired() {
+        // The old segment record can't carry `file_field_ids`, so a manifest that has any must
+        // be normalized before comparing against what the pre-lifecycle bytes decode to.
+        let want = without_file_field_ids(sample_manifest());
+        let bytes = encode_pre_lifecycle(&want);
+
+        let plain = decode("m", &bytes).unwrap();
+        assert_eq!(plain.next_job_id, 1);
+        assert!(plain.jobs.is_empty());
+        assert!(plain.retired.is_empty());
+        for t in &plain.tables {
+            for s in &t.segments {
+                assert!(s.file_field_ids.is_empty());
+            }
+        }
+        assert_eq!(plain, want);
+
+        // Stable: re-encoding the backfilled result and decoding again agrees.
+        let backfilled = Manifest::decode("m", &bytes).unwrap();
+        assert_eq!(backfilled, want);
+        let again = Manifest::decode("m", &backfilled.encode()).unwrap();
+        assert_eq!(again, backfilled);
+    }
+
+    #[test]
+    fn unknown_retire_reason_byte_is_corrupt() {
+        let m = sample_manifest();
+        let bytes = encode_with_bad_retire_reason(&m);
+        match decode("m", &bytes) {
+            Err(Error::Corrupt { detail, .. }) => {
+                assert!(detail.contains("retire reason 99"), "{detail}")
+            }
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn job_id_zero_is_corrupt() {
+        let m = sample_manifest();
+        let bytes = encode_with_bad_job_id(&m);
+        match decode("m", &bytes) {
+            Err(Error::Corrupt { detail, .. }) => assert!(detail.contains("job id 0"), "{detail}"),
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+    }
+
+    /// `project_onto` indexes `columns` by a position found in `field_ids`: a manifest whose
+    /// two lists disagree must be rejected on decode, never panic later.
+    #[test]
+    fn field_ids_longer_than_column_stats_is_corrupt() {
+        let mut m = sample_manifest();
+        let seg = m
+            .tables
+            .iter_mut()
+            .flat_map(|t| t.segments.iter_mut())
+            .find(|s| !s.field_ids.is_empty())
+            .expect("sample has a segment with field ids");
+        seg.field_ids.push(FieldId(999));
+        match decode("m", &encode(&m)) {
+            Err(Error::Corrupt { detail, .. }) => {
+                assert!(detail.contains("field ids for"), "{detail}")
+            }
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_non_zero_file_field_id_is_corrupt() {
+        let m = sample_manifest();
+        let bytes = encode_with_bad_file_field_ids(&m);
+        match decode("m", &bytes) {
+            Err(Error::Corrupt { detail, .. }) => {
+                assert!(detail.contains("duplicate file field id 7"), "{detail}")
+            }
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
     }
 }

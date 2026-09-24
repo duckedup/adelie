@@ -34,13 +34,10 @@
 5. **Push both.** `git pull --rebase` then `git push -u origin <branch>`, and `bd dolt push`
    for the issue state. Nothing tracker-related rides along in the commit, so a `git push`
    alone leaves every claim and close on your machine.
-6. **Offer the PR** with `AskUserQuestion` — open it, or stop with the branch pushed. When
-   opening: `gh pr create --assignee @me`, title = the commit subject verbatim, body = what
-   changed and why plus `Closes adelie-<id>`. Then `gh pr merge --auto --squash`: the queue
-   still retests, and the PR merges the moment checks go green instead of waiting for
-   someone to come back and press the button. Print the URL.
-   Auto-merge makes step 3's bead close easy to orphan — nobody is watching when it lands —
-   so close it at your next touch of the repo rather than assuming someone saw it merge.
+6. **Open the PR — do not ask.** Review passing is the go-ahead; the maintainer has said
+   never to ask about shipping. `gh pr create --assignee @me`, title = the commit subject
+   verbatim, body = what changed and why plus `Closes adelie-<id>`. **Do not enable
+   auto-merge**: the maintainer merges PRs themselves. Print the URL.
 7. **Watch the checks, and fix what goes red.** Pushing is not finishing: the lanes you did
    not run locally run here, and a PR handed back with checks in flight is work of unknown
    status. Poll in the background until every check settles:
@@ -58,5 +55,19 @@
 
    Report only when every check is green or you are genuinely stuck, and never describe a
    check as passing that you have not seen pass.
+8. **Watch for the merge, then finish.** Once checks are green, keep watching the PR in the
+   background (a detached poll that exits on a terminal state, not a foreground wait):
 
-Ask before the commit. Never commit or push without the user choosing to.
+   ```bash
+   until s=$(gh pr view <n> --json state -q .state) && [ "$s" != OPEN ]; do sleep 60; done; echo "$s"
+   ```
+
+   New commits or review comments while it is open: fix, push, re-watch the checks. On
+   `MERGED`: `bd close adelie-<id> --reason "shipped in #<pr>"` for every `Closes` ticket,
+   `bd dolt push`, prune this ticket's worktrees under `.claude/worktrees/`, then
+   `git checkout main && git pull` and delete the local branch. On `CLOSED` unmerged: say so
+   and leave the bead open.
+
+**Ship never asks.** Commit, push, open the PR, fix red checks and finish after the merge
+without an `AskUserQuestion`. The only stops are a check you genuinely cannot fix and a
+`laws --strict` error you cannot resolve — report those plainly.

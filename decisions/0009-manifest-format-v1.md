@@ -37,7 +37,7 @@ commit conflicts only per table, and appends never conflict.
 
 ```
 HEADER  "ADLMAN" (6 bytes) + MANIFEST_VERSION u16 (= 1)                     8 bytes
-BODY    record(header_fields) · record(tables) · record(garbage)
+BODY    record(header_fields) · record(tables) · record(garbage) · record(lifecycle)
 TRAILER footer_len u32 · footer_crc32c u32 · "ADLMAN" · MANIFEST_VERSION u16
 ```
 
@@ -169,6 +169,52 @@ with no recorded `dir` keeps the `<db>/<name>` directory it was actually written
 empty `field_ids` gets the schema's ids in schema order, since a segment's columns were
 positional before D0012. Decoding the same bytes twice agrees, and the assignment is persisted
 only by the next ordinary commit — opening a store for reads alone writes nothing.
+
+### Additive fields (D0013, adelie-2hh.2)
+
+The 4th top-level body record, `lifecycle`, absent as a whole in a manifest written before it
+(a `decode_body` that finds nothing after `garbage` treats this the same as the trailing-field
+rule above): absent decodes to `next_job_id = 1`, no jobs, no retired entries.
+
+| field | type |
+|---|---|
+| next_job_id | uvarint |
+| jobs | uvarint count, then one record per `Job` |
+| retired | uvarint count, then one record per `Retired` |
+
+`Job` record:
+
+| field | type |
+|---|---|
+| id | uvarint (never 0; must be `< next_job_id`) |
+| source | uvarint (table id) |
+| snapshot | uvarint (manifest version the job was planned against) |
+| handled | record (uvarint list): source segment ids already carried into `target` |
+| reused | uvarint |
+| rewritten | uvarint |
+| target | table-entry record (`encode_table_entry`, the same shape as a `tables` entry) |
+
+`Retired` record:
+
+| field | type |
+|---|---|
+| reason | u8: 0 `Swapped`, 1 `Reverted`, 2 `Dropped`; any other byte is `Corrupt` |
+| retired_at_ms | uvarint |
+| version | uvarint (the manifest version of the commit that retired the entry) |
+| successor_segments | record (uvarint list); `Swapped` only, else empty |
+| entry | table-entry record (`encode_table_entry`) |
+
+`SegmentEntry` gets one more trailing field, after `field_ids`:
+
+| field | type | absent decodes to |
+|---|---|---|
+| file_field_ids | record (field-id list) | empty (the file's columns are exactly `field_ids`) |
+
+`file_field_ids` is the segment *file's* physical column layout, one id per file column in
+file order; `FieldId(0)` marks a file column this entry does not read. A `SegmentEntry` is a
+table's view of a file: two tables can hold different views of one segment id (their `columns`
+and `field_ids` each stay aligned to their own schema), and GC counts references to a segment
+id across live tables, retired entries and job targets, not just one table's segment list.
 
 ## The commit rules
 

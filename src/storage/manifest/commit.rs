@@ -3,10 +3,11 @@
 
 use crate::types::{DataType, Value, coerce};
 
+use super::alter;
 use super::error::Error;
 use super::{
-    FieldId, Garbage, Manifest, PartitionBy, Predicate, SchemaField, SegmentEntry, TableEntry,
-    TableId, TableName, TableSpec, Tombstone, Ttl,
+    Alter, FieldId, Garbage, Job, Manifest, PartitionBy, Predicate, RetireReason, Retired,
+    SchemaField, SegmentEntry, TableEntry, TableId, TableName, TableSpec, Tombstone, Ttl,
 };
 
 /// One change to a `Manifest`. `Commit::apply` applies a list of these in order.
@@ -37,6 +38,47 @@ pub enum Edit {
     },
     ReserveSegmentIds {
         next: u64,
+    },
+    /// Plans `ops` against live `table` and records a job: reserves the target's table id and
+    /// the job id; `snapshot` = the version this commit builds on.
+    CreateJob {
+        table: TableName,
+        ops: Vec<Alter>,
+    },
+    /// Carries source segments into the job's target: `reused` ids are copied from the source
+    /// and projected onto the target schema; `rewritten` ids' rows are now in `segments` (new
+    /// files under the target's directory).
+    AdvanceJob {
+        job: u64,
+        reused: Vec<u64>,
+        rewritten: Vec<u64>,
+        segments: Vec<SegmentEntry>,
+    },
+    /// Swaps the target in for the source (SPEC §19 step 3); the source is retired `Swapped`.
+    SwapJob {
+        job: u64,
+    },
+    /// Drops the job; its rewritten files go to garbage, reused ones stay with the source.
+    CancelJob {
+        job: u64,
+    },
+    RevertTable {
+        table: TableName,
+    },
+    DropTable {
+        table: TableName,
+    },
+    UndropTable {
+        table: TableName,
+    },
+    /// Every segment goes to garbage, every tombstone goes; ids and definition are kept.
+    TruncateTable {
+        table: TableName,
+    },
+    /// Forgets retired entries retired before `before_ms`; releases their segments. Never
+    /// conflicts.
+    ExpireRetired {
+        before_ms: u64,
     },
 }
 
@@ -72,6 +114,23 @@ fn apply_edit(m: &mut Manifest, edit: &Edit, now_ms: u64) -> Result<(), Error> {
         }
         Edit::ReserveSegmentIds { next } => {
             reserve_segment_ids(m, *next);
+            Ok(())
+        }
+        Edit::CreateJob { table, ops } => create_job(m, table, ops),
+        Edit::AdvanceJob {
+            job,
+            reused,
+            rewritten,
+            segments,
+        } => advance_job(m, *job, reused, rewritten, segments),
+        Edit::SwapJob { job } => swap_job(m, *job, now_ms),
+        Edit::CancelJob { job } => cancel_job(m, *job, now_ms),
+        Edit::RevertTable { table } => revert_table(m, table, now_ms),
+        Edit::DropTable { table } => drop_table(m, table, now_ms),
+        Edit::UndropTable { table } => undrop_table(m, table),
+        Edit::TruncateTable { table } => truncate_table(m, table, now_ms),
+        Edit::ExpireRetired { before_ms } => {
+            expire_retired(m, *before_ms, now_ms);
             Ok(())
         }
     }
@@ -163,14 +222,32 @@ fn add_segments(
     segments: &[SegmentEntry],
 ) -> Result<(), Error> {
     let idx = table_index(m, table)?;
-    let schema_len = m.tables[idx].schema.len();
     let schema_ids: Vec<FieldId> = m.tables[idx].schema.iter().map(|f| f.id).collect();
+    validate_new_segments(table, &schema_ids, segments)?;
+    let entry = &mut m.tables[idx];
+    entry.segments.extend(segments.iter().cloned());
+    entry.segments.sort_by_key(|s| (s.seq, s.id));
+    let max_id = entry.segments.iter().map(|s| s.id).max();
+    if let Some(max_id) = max_id {
+        m.next_segment_id = m.next_segment_id.max(max_id + 1);
+    }
+    Ok(())
+}
+
+/// The checks a batch of new segments must pass against a schema: column-stat count, field-id
+/// alignment and a well-formed `dir` (SPEC §5). Shared by `AddSegments` and `AdvanceJob`.
+fn validate_new_segments(
+    table: &TableName,
+    schema_ids: &[FieldId],
+    segments: &[SegmentEntry],
+) -> Result<(), Error> {
     for s in segments {
-        if s.columns.len() != schema_len {
+        if s.columns.len() != schema_ids.len() {
             return Err(Error::Usage(format!(
-                "segment {} has {} column stats, table {table} has {schema_len} columns",
+                "segment {} has {} column stats, table {table} has {} columns",
                 s.id,
-                s.columns.len()
+                s.columns.len(),
+                schema_ids.len()
             )));
         }
         if s.field_ids != schema_ids {
@@ -178,7 +255,7 @@ fn add_segments(
                 "segment {}: field ids {:?} do not match table {table}'s {:?}",
                 s.id,
                 ids_of(&s.field_ids),
-                ids_of(&schema_ids)
+                ids_of(schema_ids)
             )));
         }
         if s.dir.is_empty() || !s.dir.split('/').all(super::is_path_component) {
@@ -187,13 +264,6 @@ fn add_segments(
                 s.id, s.dir
             )));
         }
-    }
-    let entry = &mut m.tables[idx];
-    entry.segments.extend(segments.iter().cloned());
-    entry.segments.sort_by_key(|s| (s.seq, s.id));
-    let max_id = entry.segments.iter().map(|s| s.id).max();
-    if let Some(max_id) = max_id {
-        m.next_segment_id = m.next_segment_id.max(max_id + 1);
     }
     Ok(())
 }
@@ -209,6 +279,14 @@ fn remove_segments(
     now_ms: u64,
 ) -> Result<(), Error> {
     let idx = table_index(m, table)?;
+    // A running job owns the source's segment set: removing one it already carried would let
+    // the job carry the rows again through whatever replaced it (a compaction's output).
+    if let Some(job) = m.job_for(table) {
+        return Err(Error::JobRunning {
+            table: table.to_string(),
+            job: job.id,
+        });
+    }
     for &id in ids {
         if !m.tables[idx].segments.iter().any(|s| s.id == id) {
             return Err(Error::Conflict {
@@ -220,23 +298,393 @@ fn remove_segments(
     let mut removed = Vec::new();
     m.tables[idx].segments.retain(|s| {
         if ids.contains(&s.id) {
-            let mut garbage = s.clone();
-            garbage.columns.clear();
-            garbage.field_ids.clear();
-            removed.push(garbage);
+            removed.push(s.clone());
             false
         } else {
             true
         }
     });
-    for segment in removed {
+    release(m, table, removed, now_ms);
+    Ok(())
+}
+
+/// Moves each segment to garbage unless something still references it (D0012: a reused
+/// segment is shared by a swapped table and the one kept for REVERT) or it is already there.
+fn release(m: &mut Manifest, table: &TableName, segments: Vec<SegmentEntry>, now_ms: u64) {
+    for mut segment in segments {
+        if m.references_segment(segment.id) || m.garbage.iter().any(|g| g.segment.id == segment.id)
+        {
+            continue;
+        }
+        segment.columns.clear();
+        segment.field_ids.clear();
+        segment.file_field_ids.clear();
         m.garbage.push(Garbage {
             table: table.clone(),
             segment,
             removed_at_ms: now_ms,
         });
     }
+}
+
+fn table_index_by_id(m: &Manifest, id: TableId) -> Option<usize> {
+    m.tables.iter().position(|t| t.id == id)
+}
+
+fn create_job(m: &mut Manifest, table: &TableName, ops: &[Alter]) -> Result<(), Error> {
+    let idx = table_index(m, table)?;
+    if let Some(job) = m.job_for(table) {
+        return Err(Error::JobRunning {
+            table: table.to_string(),
+            job: job.id,
+        });
+    }
+    let mut target = alter::plan_alter(&m.tables[idx], ops)?;
+    let source_id = m.tables[idx].id;
+    target.id = TableId(m.next_table_id);
+    m.next_table_id += 1;
+    let job = Job {
+        id: m.next_job_id,
+        source: source_id,
+        snapshot: m.version,
+        target,
+        handled: Vec::new(),
+        reused: 0,
+        rewritten: 0,
+    };
+    m.next_job_id += 1;
+    m.jobs.push(job);
     Ok(())
+}
+
+fn advance_job(
+    m: &mut Manifest,
+    job_id: u64,
+    reused: &[u64],
+    rewritten: &[u64],
+    segments: &[SegmentEntry],
+) -> Result<(), Error> {
+    let job_idx = m
+        .jobs
+        .iter()
+        .position(|j| j.id == job_id)
+        .ok_or(Error::NoSuchJob { job: job_id })?;
+    let source_idx =
+        table_index_by_id(m, m.jobs[job_idx].source).ok_or_else(|| Error::Conflict {
+            table: m.jobs[job_idx].target.name.to_string(),
+            detail: "source table does not exist".to_string(),
+        })?;
+    let table_name = m.tables[source_idx].name.clone();
+
+    for &id in reused.iter().chain(rewritten.iter()) {
+        let live = m.tables[source_idx].segments.iter().any(|s| s.id == id);
+        let handled = m.jobs[job_idx].handled.contains(&id);
+        if !live || handled {
+            return Err(Error::Conflict {
+                table: table_name.to_string(),
+                detail: format!("segment {id} already handled / not live"),
+            });
+        }
+    }
+
+    let target_schema = m.jobs[job_idx].target.schema.clone();
+    let schema_ids: Vec<FieldId> = target_schema.iter().map(|f| f.id).collect();
+    validate_new_segments(&table_name, &schema_ids, segments)?;
+
+    let mut new_segments: Vec<SegmentEntry> = reused
+        .iter()
+        .map(|&id| {
+            m.tables[source_idx]
+                .segments
+                .iter()
+                .find(|s| s.id == id)
+                .expect("checked live above")
+                .project_onto(&target_schema)
+        })
+        .collect();
+    new_segments.extend(segments.iter().cloned());
+
+    let job = &mut m.jobs[job_idx];
+    job.target.segments.extend(new_segments);
+    job.target.segments.sort_by_key(|s| (s.seq, s.id));
+    job.handled
+        .extend(reused.iter().chain(rewritten.iter()).copied());
+    job.handled.sort_unstable();
+    job.reused += reused.len() as u64;
+    job.rewritten += rewritten.len() as u64;
+
+    let max_id = job.target.segments.iter().map(|s| s.id).max();
+    if let Some(max_id) = max_id {
+        m.next_segment_id = m.next_segment_id.max(max_id + 1);
+    }
+    Ok(())
+}
+
+fn swap_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
+    let job_idx = m
+        .jobs
+        .iter()
+        .position(|j| j.id == job_id)
+        .ok_or(Error::NoSuchJob { job: job_id })?;
+    let source_idx =
+        table_index_by_id(m, m.jobs[job_idx].source).ok_or_else(|| Error::Conflict {
+            table: m.jobs[job_idx].target.name.to_string(),
+            detail: "source table does not exist".to_string(),
+        })?;
+
+    if let Some(id) = m.tables[source_idx]
+        .segments
+        .iter()
+        .map(|s| s.id)
+        .find(|id| !m.jobs[job_idx].handled.contains(id))
+    {
+        return Err(Error::Conflict {
+            table: m.tables[source_idx].name.to_string(),
+            detail: format!("catch-up incomplete: segment {id}"),
+        });
+    }
+
+    let source = m.tables.remove(source_idx);
+    let mut job = m.jobs.remove(job_idx);
+
+    // Rename each tombstone predicate's column from the source's schema to the target's, by
+    // field id; rule 3d of `plan_alter` makes a target missing the column impossible.
+    let mut tombstones = Vec::with_capacity(source.tombstones.len());
+    for t in &source.tombstones {
+        let mut predicates = Vec::with_capacity(t.predicates.len());
+        for p in &t.predicates {
+            let id = source
+                .schema
+                .iter()
+                .find(|f| f.field.name == p.column)
+                .map(|f| f.id)
+                .ok_or_else(|| {
+                    Error::Usage(format!(
+                        "table {}: tombstone at seq {} names unknown column {}",
+                        source.name, t.seq, p.column
+                    ))
+                })?;
+            let name = job
+                .target
+                .field(id)
+                .map(|f| f.field.name.clone())
+                .ok_or_else(|| {
+                    Error::Usage(format!(
+                        "table {}: tombstone at seq {} names column {} the migration target lacks",
+                        source.name, t.seq, p.column
+                    ))
+                })?;
+            predicates.push(Predicate {
+                column: name,
+                ..p.clone()
+            });
+        }
+        tombstones.push(Tombstone {
+            seq: t.seq,
+            predicates,
+        });
+    }
+    job.target.tombstones = tombstones;
+
+    let mut successor_segments: Vec<u64> = job.target.segments.iter().map(|s| s.id).collect();
+    successor_segments.sort_unstable();
+
+    m.retired.push(Retired {
+        entry: source,
+        reason: RetireReason::Swapped,
+        retired_at_ms: now_ms,
+        version: m.version + 1,
+        successor_segments,
+    });
+
+    let pos = m.tables.partition_point(|t| t.name < job.target.name);
+    m.tables.insert(pos, job.target);
+    Ok(())
+}
+
+fn cancel_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
+    let job_idx = m
+        .jobs
+        .iter()
+        .position(|j| j.id == job_id)
+        .ok_or(Error::NoSuchJob { job: job_id })?;
+    let job = m.jobs.remove(job_idx);
+    let table = job.target.name.clone();
+    release(m, &table, job.target.segments, now_ms);
+    Ok(())
+}
+
+fn revert_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+    let r_idx = m
+        .retired
+        .iter()
+        .rposition(|r| r.reason == RetireReason::Swapped && &r.entry.name == table)
+        .ok_or_else(|| Error::NothingToRevert {
+            table: table.to_string(),
+        })?;
+    let cur_idx = m
+        .tables
+        .iter()
+        .position(|t| &t.name == table)
+        .ok_or_else(|| Error::NothingToRevert {
+            table: table.to_string(),
+        })?;
+    if let Some(job) = m.job_for(table) {
+        return Err(Error::JobRunning {
+            table: table.to_string(),
+            job: job.id,
+        });
+    }
+
+    let live_ids: std::collections::HashSet<u64> =
+        m.tables[cur_idx].segments.iter().map(|s| s.id).collect();
+    for &id in &m.retired[r_idx].successor_segments {
+        if !live_ids.contains(&id) {
+            return Err(Error::RevertStale {
+                table: table.to_string(),
+                detail: format!("segment {id} was compacted or removed since the swap"),
+            });
+        }
+    }
+
+    let retired = m.retired.remove(r_idx);
+    let cur = m.tables.remove(cur_idx);
+
+    let mut restored = retired.entry.clone();
+    restored.next_field_id = restored.next_field_id.max(cur.next_field_id);
+
+    let successor_ids: std::collections::HashSet<u64> =
+        retired.successor_segments.iter().copied().collect();
+    let mut segments = restored.segments.clone();
+    for s in &cur.segments {
+        if !successor_ids.contains(&s.id) {
+            segments.push(s.project_onto(&restored.schema));
+        }
+    }
+    segments.sort_by_key(|s| (s.seq, s.id));
+    restored.segments = segments;
+
+    let mut tombstones = restored.tombstones.clone();
+    for t in cur.tombstones.iter().filter(|t| t.seq > retired.version) {
+        let mut predicates = Vec::with_capacity(t.predicates.len());
+        for p in &t.predicates {
+            let id = cur
+                .schema
+                .iter()
+                .find(|f| f.field.name == p.column)
+                .map(|f| f.id)
+                .ok_or_else(|| Error::RevertStale {
+                    table: table.to_string(),
+                    detail: format!(
+                        "tombstone at seq {} names unknown column {}",
+                        t.seq, p.column
+                    ),
+                })?;
+            let name = restored
+                .field(id)
+                .map(|f| f.field.name.clone())
+                .ok_or_else(|| Error::RevertStale {
+                    table: table.to_string(),
+                    detail: format!(
+                        "tombstone at seq {} names column {} the reverted table lacks",
+                        t.seq, p.column
+                    ),
+                })?;
+            predicates.push(Predicate {
+                column: name,
+                ..p.clone()
+            });
+        }
+        tombstones.push(Tombstone {
+            seq: t.seq,
+            predicates,
+        });
+    }
+    restored.tombstones = tombstones;
+
+    m.retired.push(Retired {
+        entry: cur,
+        reason: RetireReason::Reverted,
+        retired_at_ms: now_ms,
+        version: m.version + 1,
+        successor_segments: Vec::new(),
+    });
+
+    let pos = m.tables.partition_point(|t| t.name < restored.name);
+    m.tables.insert(pos, restored);
+    Ok(())
+}
+
+fn drop_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+    let idx = table_index(m, table)?;
+    if let Some(job) = m.job_for(table) {
+        return Err(Error::JobRunning {
+            table: table.to_string(),
+            job: job.id,
+        });
+    }
+    let entry = m.tables.remove(idx);
+    m.retired.push(Retired {
+        entry,
+        reason: RetireReason::Dropped,
+        retired_at_ms: now_ms,
+        version: m.version + 1,
+        successor_segments: Vec::new(),
+    });
+    Ok(())
+}
+
+fn undrop_table(m: &mut Manifest, table: &TableName) -> Result<(), Error> {
+    let r_idx = m
+        .retired
+        .iter()
+        .rposition(|r| r.reason == RetireReason::Dropped && &r.entry.name == table)
+        .ok_or_else(|| Error::NotDropped {
+            table: table.to_string(),
+        })?;
+    if m.table(table).is_some() {
+        return Err(Error::Conflict {
+            table: table.to_string(),
+            detail: "table already exists".to_string(),
+        });
+    }
+    let retired = m.retired.remove(r_idx);
+    let pos = m.tables.partition_point(|t| t.name < retired.entry.name);
+    m.tables.insert(pos, retired.entry);
+    Ok(())
+}
+
+fn truncate_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+    let idx = table_index(m, table)?;
+    if let Some(job) = m.job_for(table) {
+        return Err(Error::JobRunning {
+            table: table.to_string(),
+            job: job.id,
+        });
+    }
+    let segments = std::mem::take(&mut m.tables[idx].segments);
+    m.tables[idx].tombstones.clear();
+    release(m, table, segments, now_ms);
+    Ok(())
+}
+
+fn expire_retired(m: &mut Manifest, before_ms: u64, now_ms: u64) {
+    let expired: Vec<Retired> = {
+        let mut kept = Vec::with_capacity(m.retired.len());
+        let mut expired = Vec::new();
+        for r in m.retired.drain(..) {
+            if r.retired_at_ms < before_ms {
+                expired.push(r);
+            } else {
+                kept.push(r);
+            }
+        }
+        m.retired = kept;
+        expired
+    };
+    for r in expired {
+        release(m, &r.entry.name, r.entry.segments, now_ms);
+    }
 }
 
 fn add_tombstone(
@@ -245,6 +693,23 @@ fn add_tombstone(
     predicates: &[Predicate],
 ) -> Result<(), Error> {
     let idx = table_index(m, table)?;
+    // The swap renames tombstones through field ids; one on a column the running job drops
+    // could never be carried over, and would wedge the job at its swap.
+    if let Some(job) = m.job_for(table) {
+        let dropped = predicates.iter().any(|p| {
+            m.tables[idx]
+                .schema
+                .iter()
+                .find(|f| f.field.name == p.column)
+                .is_some_and(|f| job.target.field(f.id).is_none())
+        });
+        if dropped {
+            return Err(Error::JobRunning {
+                table: table.to_string(),
+                job: job.id,
+            });
+        }
+    }
     let schema = &m.tables[idx].schema;
     let mut stored = Vec::with_capacity(predicates.len());
     for p in predicates {
@@ -356,6 +821,7 @@ mod tests {
             side_files: Vec::new(),
             dir: dir.to_string(),
             field_ids: field_ids.into_iter().map(FieldId).collect(),
+            file_field_ids: Vec::new(),
         }
     }
 
@@ -832,5 +1298,766 @@ mod tests {
             Duration::from_secs(3600)
         );
         assert_eq!(entry.ttl.unwrap().after, Duration::from_secs(86_400));
+    }
+
+    // ── migration jobs, REVERT, DROP/UNDROP, TRUNCATE (SPEC §19) ────────────────────────────
+
+    fn two_col_spec() -> TableSpec {
+        TableSpec::new(
+            TableName::new("d", "t"),
+            vec![
+                Field {
+                    name: "a".to_string(),
+                    ty: DataType::Int64,
+                },
+                Field {
+                    name: "b".to_string(),
+                    ty: DataType::Int64,
+                },
+            ],
+        )
+    }
+
+    fn base_with_two_col_table() -> Manifest {
+        Commit {
+            base: 0,
+            edits: vec![Edit::CreateTable {
+                spec: two_col_spec(),
+            }],
+        }
+        .apply(&Manifest::empty(), 0)
+        .unwrap()
+    }
+
+    /// A segment with one `ColumnStats` per id in `field_ids`, for tables with more than one
+    /// column (the top-level `seg` fixture is hardcoded to a single column).
+    fn seg_for(id: u64, seq: u64, dir: &str, field_ids: Vec<u64>) -> SegmentEntry {
+        let columns = field_ids
+            .iter()
+            .map(|_| ColumnStats {
+                rows: 1,
+                null_count: 0,
+                min: Some(Value::Int64(0)),
+                max: Some(Value::Int64(0)),
+            })
+            .collect();
+        SegmentEntry {
+            id,
+            partition: "_".to_string(),
+            seq,
+            rows: 1,
+            bytes: 1,
+            footer_crc: 0,
+            columns,
+            side_files: Vec::new(),
+            dir: dir.to_string(),
+            field_ids: field_ids.into_iter().map(FieldId).collect(),
+            file_field_ids: Vec::new(),
+        }
+    }
+
+    fn start_job(m: &Manifest, ops: Vec<Alter>) -> (Manifest, u64) {
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::CreateJob {
+                table: TableName::new("d", "t"),
+                ops,
+            }],
+        }
+        .apply(m, 0)
+        .unwrap();
+        let job_id = m.jobs[0].id;
+        (m, job_id)
+    }
+
+    #[test]
+    fn job_lifecycle_create_advance_swap_renames_tombstones_and_retires_the_source() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: table.clone(),
+                predicates: vec![Predicate {
+                    column: "b".to_string(),
+                    op: CmpOp::Eq,
+                    value: Value::Int64(1),
+                }],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::RenameColumn {
+                from: "b".to_string(),
+                to: "bb".to_string(),
+            }],
+        );
+        let target_id = m.jobs[0].target.id;
+        assert_ne!(target_id, m.table(&table).unwrap().id);
+
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        assert_eq!(m.jobs[0].handled, vec![1]);
+        assert_eq!(m.jobs[0].target.segments.len(), 1);
+        assert_eq!(m.jobs[0].target.segments[0].field_ids.len(), 2);
+
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        }
+        .apply(&m, 999)
+        .unwrap();
+
+        assert!(m.jobs.is_empty());
+        let live = m.table(&table).unwrap();
+        assert_eq!(live.id, target_id);
+        assert_eq!(live.segments.len(), 1);
+        assert_eq!(live.tombstones.len(), 1);
+        assert_eq!(live.tombstones[0].predicates[0].column, "bb");
+
+        let retired = m
+            .retired
+            .iter()
+            .find(|r| r.reason == RetireReason::Swapped)
+            .unwrap();
+        assert_eq!(retired.retired_at_ms, 999);
+        assert_eq!(retired.successor_segments, vec![1]);
+    }
+
+    #[test]
+    fn swap_with_an_unhandled_segment_conflicts() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::Conflict { .. })));
+    }
+
+    #[test]
+    fn advance_job_handling_a_segment_twice_conflicts() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::Conflict { .. })));
+    }
+
+    #[test]
+    fn create_job_while_one_runs_is_job_running() {
+        let m = base_with_two_col_table();
+        let (m, _job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::CreateJob {
+                table: TableName::new("d", "t"),
+                ops: vec![Alter::AddColumn(Field {
+                    name: "d".to_string(),
+                    ty: DataType::Int64,
+                })],
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::JobRunning { .. })));
+    }
+
+    /// A compaction racing a job must not replace a segment the job already carried: the job
+    /// would carry its rows again through the compaction's output.
+    #[test]
+    fn remove_segments_while_a_job_runs_is_job_running() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, _job) = start_job(
+            &m,
+            vec![Alter::RenameColumn {
+                from: "b".to_string(),
+                to: "bb".to_string(),
+            }],
+        );
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::RemoveSegments {
+                table,
+                ids: vec![1],
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::JobRunning { .. })));
+    }
+
+    /// A tombstone on a column the running job drops could never be renamed onto the target at
+    /// the swap; one on a column the job keeps is fine.
+    #[test]
+    fn a_tombstone_on_a_column_the_running_job_drops_is_job_running() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let (m, _job) = start_job(&m, vec![Alter::DropColumn("b".to_string())]);
+        let on = |column: &str| Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: table.clone(),
+                predicates: vec![Predicate {
+                    column: column.to_string(),
+                    op: CmpOp::Eq,
+                    value: Value::Int64(1),
+                }],
+            }],
+        };
+        assert!(matches!(
+            on("b").apply(&m, 0),
+            Err(Error::JobRunning { .. })
+        ));
+        assert!(on("a").apply(&m, 0).is_ok());
+    }
+
+    #[test]
+    fn remove_segments_does_not_garbage_a_segment_still_referenced_by_a_retired_entry() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        // Today's `remove_segments` garbages unconditionally; it must not here, because the
+        // retired entry from the swap still lists segment 1.
+        let after_remove = Commit {
+            base: m.version,
+            edits: vec![Edit::RemoveSegments {
+                table: table.clone(),
+                ids: vec![1],
+            }],
+        }
+        .apply(&m, 100)
+        .unwrap();
+        assert!(
+            after_remove.garbage.is_empty(),
+            "segment is still referenced by the retired entry"
+        );
+
+        let after_expire = Commit {
+            base: after_remove.version,
+            edits: vec![Edit::ExpireRetired {
+                before_ms: u64::MAX,
+            }],
+        }
+        .apply(&after_remove, 200)
+        .unwrap();
+        assert_eq!(after_expire.garbage.len(), 1);
+        assert_eq!(after_expire.garbage[0].segment.id, 1);
+    }
+
+    #[test]
+    fn cancel_job_garbages_the_rewritten_segment_but_not_the_reused_one() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![
+                    seg_for(1, 1, &dir, vec![1, 2]),
+                    seg_for(2, 2, &dir, vec![1, 2]),
+                ],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::OrderBy(vec!["b".to_string(), "a".to_string()])],
+        );
+        let target_dir = m.jobs[0].target.dir();
+        let rewritten_new = seg_for(10, 1, &target_dir, vec![1, 2]);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![2],
+                segments: vec![rewritten_new],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::CancelJob { job: job_id }],
+        }
+        .apply(&m, 500)
+        .unwrap();
+
+        assert!(m.jobs.is_empty());
+        // Segment 1 is reused: still live under the (untouched) source table, so not garbage.
+        assert!(m.table(&table).unwrap().segments.iter().any(|s| s.id == 1));
+        assert!(!m.garbage.iter().any(|g| g.segment.id == 1));
+        // Segment 10 was only ever referenced by the now-cancelled job: garbage, exactly once.
+        assert_eq!(m.garbage.iter().filter(|g| g.segment.id == 10).count(), 1);
+    }
+
+    #[test]
+    fn revert_restores_the_original_with_original_stats_and_post_swap_writes() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let original = m.table(&table).unwrap().clone();
+
+        let (m, job_id) = start_job(&m, vec![Alter::DropColumn("b".to_string())]);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let swapped = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        // A write since the swap: a new segment (single column "a") and a tombstone on "a",
+        // which exists on both sides of the migration.
+        let post_dir = swapped.table(&table).unwrap().dir();
+        let a_id = swapped.table(&table).unwrap().schema[0].id.0;
+        let m = Commit {
+            base: swapped.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(2, swapped.version, &post_dir, vec![a_id])],
+            }],
+        }
+        .apply(&swapped, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: table.clone(),
+                predicates: vec![Predicate {
+                    column: "a".to_string(),
+                    op: CmpOp::Eq,
+                    value: Value::Int64(1),
+                }],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let reverted = Commit {
+            base: m.version,
+            edits: vec![Edit::RevertTable {
+                table: table.clone(),
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let restored = reverted.table(&table).unwrap();
+        assert_eq!(restored.id, original.id);
+        assert_eq!(restored.schema, original.schema);
+        assert_eq!(
+            restored.next_field_id,
+            original
+                .next_field_id
+                .max(swapped.table(&table).unwrap().next_field_id)
+        );
+        // The dropped column's original stats are back.
+        let seg1 = restored.segments.iter().find(|s| s.id == 1).unwrap();
+        assert_eq!(seg1.columns, original.segments[0].columns);
+        // The post-swap write is carried over, projected onto the restored (two-column) schema.
+        let seg2 = restored.segments.iter().find(|s| s.id == 2).unwrap();
+        assert_eq!(seg2.field_ids.len(), 2);
+        // The post-swap tombstone survived, still naming "a".
+        assert!(
+            restored
+                .tombstones
+                .iter()
+                .any(|t| t.predicates.iter().any(|p| p.column == "a"))
+        );
+        assert!(reverted.jobs.is_empty());
+    }
+
+    #[test]
+    fn revert_is_refused_when_a_successor_segment_is_gone() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let dir = table_dir(&m);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg_for(1, 1, &dir, vec![1, 2])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let (m, job_id) = start_job(&m, vec![Alter::DropColumn("b".to_string())]);
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AdvanceJob {
+                job: job_id,
+                reused: vec![1],
+                rewritten: vec![],
+                segments: vec![],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        // The successor segment (id 1) is compacted away.
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::RemoveSegments {
+                table: table.clone(),
+                ids: vec![1],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::RevertTable {
+                table: table.clone(),
+            }],
+        };
+        assert!(matches!(
+            commit.apply(&m, 0),
+            Err(Error::RevertStale { .. })
+        ));
+    }
+
+    #[test]
+    fn revert_is_refused_when_a_post_swap_tombstone_names_a_column_the_original_lacks() {
+        let table = TableName::new("d", "t");
+        let m = base_with_two_col_table();
+        let (m, job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        // No segments to catch up on, so the swap needs no `AdvanceJob`.
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::SwapJob { job: job_id }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: table.clone(),
+                predicates: vec![Predicate {
+                    column: "c".to_string(),
+                    op: CmpOp::Eq,
+                    value: Value::Int64(1),
+                }],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::RevertTable {
+                table: table.clone(),
+            }],
+        };
+        assert!(matches!(
+            commit.apply(&m, 0),
+            Err(Error::RevertStale { .. })
+        ));
+    }
+
+    #[test]
+    fn revert_with_no_swap_is_nothing_to_revert() {
+        let m = base_with_two_col_table();
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::RevertTable {
+                table: TableName::new("d", "t"),
+            }],
+        };
+        assert!(matches!(
+            commit.apply(&m, 0),
+            Err(Error::NothingToRevert { .. })
+        ));
+    }
+
+    #[test]
+    fn drop_then_undrop_round_trips_keeping_the_table_id() {
+        let m = base_with_table();
+        let id = m.table(&TableName::new("d", "t")).unwrap().id;
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::DropTable {
+                table: TableName::new("d", "t"),
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        assert!(m.table(&TableName::new("d", "t")).is_none());
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::UndropTable {
+                table: TableName::new("d", "t"),
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        assert_eq!(m.table(&TableName::new("d", "t")).unwrap().id, id);
+    }
+
+    #[test]
+    fn undrop_over_a_recreated_name_conflicts() {
+        let m = base_with_table();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::DropTable {
+                table: TableName::new("d", "t"),
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::CreateTable { spec: spec() }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::UndropTable {
+                table: TableName::new("d", "t"),
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::Conflict { .. })));
+    }
+
+    #[test]
+    fn undrop_with_nothing_dropped_is_not_dropped() {
+        let m = base_with_table();
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::UndropTable {
+                table: TableName::new("d", "t"),
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::NotDropped { .. })));
+    }
+
+    #[test]
+    fn drop_with_a_running_job_is_job_running() {
+        let m = base_with_two_col_table();
+        let (m, _job_id) = start_job(
+            &m,
+            vec![Alter::AddColumn(Field {
+                name: "c".to_string(),
+                ty: DataType::Int64,
+            })],
+        );
+        let commit = Commit {
+            base: m.version,
+            edits: vec![Edit::DropTable {
+                table: TableName::new("d", "t"),
+            }],
+        };
+        assert!(matches!(commit.apply(&m, 0), Err(Error::JobRunning { .. })));
+    }
+
+    #[test]
+    fn truncate_clears_segments_and_tombstones_but_keeps_the_id_and_field_ids() {
+        let m = base_with_table();
+        let dir = table_dir(&m);
+        let table = TableName::new("d", "t");
+        let id = m.table(&table).unwrap().id;
+        let field_ids: Vec<FieldId> = m
+            .table(&table)
+            .unwrap()
+            .schema
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg(1, 1, &dir, vec![field_ids[0].0])],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::AddTombstone {
+                table: table.clone(),
+                predicates: vec![Predicate {
+                    column: "a".to_string(),
+                    op: CmpOp::Eq,
+                    value: Value::Int64(1),
+                }],
+            }],
+        }
+        .apply(&m, 0)
+        .unwrap();
+
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::TruncateTable {
+                table: table.clone(),
+            }],
+        }
+        .apply(&m, 42)
+        .unwrap();
+
+        let t = m.table(&table).unwrap();
+        assert!(t.segments.is_empty());
+        assert!(t.tombstones.is_empty());
+        assert_eq!(t.id, id);
+        assert_eq!(t.schema.iter().map(|f| f.id).collect::<Vec<_>>(), field_ids);
+        assert_eq!(m.garbage.len(), 1);
+        assert_eq!(m.garbage[0].removed_at_ms, 42);
     }
 }

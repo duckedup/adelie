@@ -94,6 +94,7 @@ mod tests {
             side_files: Vec::new(),
             dir: dir.to_string(),
             field_ids: field_ids.into_iter().map(FieldId).collect(),
+            file_field_ids: Vec::new(),
         }
     }
 
@@ -123,6 +124,9 @@ mod tests {
             next_table_id: 5,
             tables: vec![table(4, "a", 3, vec![field(1, "x"), field(2, "y")])],
             garbage: vec![],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         };
         m.tables[0]
             .segments
@@ -143,6 +147,9 @@ mod tests {
                 table(0, "b", 0, vec![field(0, "z")]),
             ],
             garbage: vec![],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         };
         assign_missing(&mut m);
         assert_eq!(m.tables[0].id, TableId(4));
@@ -163,6 +170,9 @@ mod tests {
                 segment: seg(9, "", 0, vec![]),
                 removed_at_ms: 1,
             }],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         };
         m.tables[0].segments.push(seg(1, "", 1, vec![]));
         let mut once = m.clone();

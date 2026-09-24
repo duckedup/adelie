@@ -40,7 +40,7 @@ open `lanes/<name>.md` and follow it.
 | `review` | `lanes/review.md` |
 | `ship` | `lanes/ship.md` |
 | `fleet` | `lanes/fleet.md` |
-| anything else | **Full pipeline**: `lanes/spec.md` → scope gate → plan gate → `lanes/implement.md` → `lanes/review.md` → offer `lanes/ship.md` |
+| anything else | **Full pipeline**: `lanes/spec.md` → scope gate → plan gate → `lanes/implement.md` → `lanes/review.md` → `lanes/ship.md` (never ask; see Ship) |
 
 Paths are relative to `.claude/skills/adelie/`. The rest of `$ARGUMENTS` is the target: an
 issue number (`#42`), **several issue numbers**, a PR number (review only), a path, or a
