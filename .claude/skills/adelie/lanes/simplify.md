@@ -4,7 +4,7 @@ Staff-level cleanup: find where adelie says the same thing twice, or says a simp
 complicated way, and fix it **without changing what adelie does**. Not a bug hunt (that is
 **Review**) and not a perf pass (that is **Optimize**).
 
-The target is a scope, not a ticket: a path (`src/store`), a subsystem in words ("the MCP
+The target is a scope, not a ticket: a path (`src/storage`), a subsystem in words ("the MCP
 surface"), or nothing at all, which means the whole repository.
 
 **The one law of this lane: no functionality is removed.** Not a public item, not a CLI flag,

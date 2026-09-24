@@ -2,9 +2,5 @@
 #![deny(unsafe_code)]
 
 pub mod exec;
-mod fail;
-mod io;
-pub mod manifest;
-pub mod segment;
-pub mod store;
+pub mod storage;
 pub mod types;

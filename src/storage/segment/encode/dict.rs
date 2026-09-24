@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use crate::exec::Bitmap;
-use crate::segment::error::DecodeError;
-use crate::segment::wire::{Cursor, Sink};
+use crate::storage::segment::error::DecodeError;
+use crate::storage::segment::wire::{Cursor, Sink};
 
 fn is_valid(validity: Option<&Bitmap>, i: usize) -> bool {
     validity.is_none_or(|v| v.get(i))
@@ -68,7 +68,7 @@ pub(super) fn decode(
             total = total.saturating_add(entry.len());
         }
     }
-    if total > crate::segment::MAX_DECODE_BYTES {
+    if total > crate::storage::segment::MAX_DECODE_BYTES {
         return Err(DecodeError::Malformed(
             "dict: decoded data exceeds MAX_DECODE_BYTES",
         ));
@@ -193,7 +193,7 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode(&mut c, crate::segment::MAX_DECODE_ROWS, None).is_err());
+        assert!(decode(&mut c, crate::storage::segment::MAX_DECODE_ROWS, None).is_err());
     }
 
     /// One 1 KiB entry and 2^20 zero codes: 1 GiB+ decoded from a ~1 KiB payload. It must be

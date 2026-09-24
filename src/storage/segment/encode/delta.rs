@@ -1,8 +1,8 @@
 //! DELTA and DELTA_OF_DELTA (encoding ids 4/5, SPEC §5): first value(s) raw, remaining
 //! differences zigzagged into a FoR block. Signed columns map through the FOR sign-flip.
 
-use crate::segment::error::DecodeError;
-use crate::segment::wire::{Cursor, Sink, unzigzag, zigzag};
+use crate::storage::segment::error::DecodeError;
+use crate::storage::segment::wire::{Cursor, Sink, unzigzag, zigzag};
 
 const SIGN: u64 = 1 << 63;
 
@@ -219,8 +219,8 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode_delta_i64(&mut c, crate::segment::MAX_DECODE_ROWS).is_err());
+        assert!(decode_delta_i64(&mut c, crate::storage::segment::MAX_DECODE_ROWS).is_err());
         let mut c = Cursor::new(&buf);
-        assert!(decode_dod_i64(&mut c, crate::segment::MAX_DECODE_ROWS).is_err());
+        assert!(decode_dod_i64(&mut c, crate::storage::segment::MAX_DECODE_ROWS).is_err());
     }
 }

@@ -254,7 +254,7 @@ fn reserve_segment_ids(m: &mut Manifest, next: u64) {
 mod tests {
     use super::*;
     use crate::exec::ColumnStats;
-    use crate::manifest::CmpOp;
+    use crate::storage::manifest::CmpOp;
     use crate::types::Decimal;
 
     fn schema() -> Vec<Field> {

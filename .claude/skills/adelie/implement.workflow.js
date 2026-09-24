@@ -76,7 +76,7 @@ ${spec.content}
 
 Rules:
 - Follow AGENTS.md and match the surrounding code. Comments cap at 3 lines. Errors are
-  hand-written enums with Display (src/segment/error.rs), never anyhow or thiserror: the crate
+  hand-written enums with Display (src/storage/segment/error.rs), never anyhow or thiserror: the crate
   has zero dependencies (D0004). On-disk encoding is little-endian, length-prefixed and
   CRC32C-checked (D0008). An Edit or Write of a .rs file runs .claude/hooks/law-check, which
   blocks new \`unsafe\` and a Miri ignore with no stated reason at the edit, not at review.

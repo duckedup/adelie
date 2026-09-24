@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::manifest::{Edit, Manifest, SegmentEntry, TableEntry, TableName};
-use crate::segment::{self, WriterOptions};
+use crate::storage::manifest::{Edit, Manifest, SegmentEntry, TableEntry, TableName};
+use crate::storage::segment::{self, WriterOptions};
 
-use super::engine::{MergePlan, engine_by_name};
+use super::engines::{MergePlan, engine_by_name};
 use super::read::read_segment;
 use super::{Error, Shared, io_err};
 
@@ -61,7 +61,7 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         .table(table)
         .ok_or_else(|| Error::UnknownTable(table.to_string()))?;
     let engine = engine_by_name(&entry.engine).ok_or_else(|| {
-        Error::Manifest(crate::manifest::Error::UnknownEngine {
+        Error::Manifest(crate::storage::manifest::Error::UnknownEngine {
             table: table.to_string(),
             engine: entry.engine.clone(),
         })
@@ -168,7 +168,7 @@ pub(crate) fn commit(shared: &Arc<Shared>, prepared: Prepared) -> Result<u64, Er
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::store::{Store, StoreOptions};
+    use crate::storage::{Store, StoreOptions};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
 
@@ -226,7 +226,7 @@ mod tests {
                     side_files: vec![],
                 })
                 .collect(),
-            tombstones: vec![crate::manifest::Tombstone {
+            tombstones: vec![crate::storage::manifest::Tombstone {
                 seq: 4,
                 predicates: vec![],
             }],
@@ -308,7 +308,9 @@ mod tests {
         };
         assert!(matches!(
             commit(&store.shared, repeat),
-            Err(Error::Manifest(crate::manifest::Error::Conflict { .. }))
+            Err(Error::Manifest(
+                crate::storage::manifest::Error::Conflict { .. }
+            ))
         ));
         std::fs::remove_dir_all(&dir).unwrap();
     }

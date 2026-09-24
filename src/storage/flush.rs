@@ -9,11 +9,11 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::exec::Batch;
-use crate::manifest::{Edit, Manifest, SegmentEntry, TableName};
-use crate::segment::{self, WriterOptions};
+use crate::storage::manifest::{Edit, Manifest, SegmentEntry, TableName};
+use crate::storage::segment::{self, WriterOptions};
 
 use super::buffer::{FlushTicket, should_flush};
-use super::engine::engine_by_name;
+use super::engines::engine_by_name;
 use super::{Error, Shared, io_err};
 
 /// Buffered batches per table, in arrival order.
@@ -104,7 +104,7 @@ pub(crate) fn run(
             .table(table)
             .ok_or_else(|| Error::UnknownTable(table.to_string()))?;
         let engine = engine_by_name(&entry.engine).ok_or_else(|| {
-            Error::Manifest(crate::manifest::Error::UnknownEngine {
+            Error::Manifest(crate::storage::manifest::Error::UnknownEngine {
                 table: table.to_string(),
                 engine: entry.engine.clone(),
             })
@@ -144,7 +144,7 @@ pub(crate) fn run(
                 .io
                 .write_new(&path, &bytes)
                 .map_err(|source| io_err(&path, source))?;
-            crate::fail::point("flush.pre_segment_sync");
+            crate::storage::fail::point("flush.pre_segment_sync");
             shared
                 .io
                 .sync_file(&file, &path)
@@ -164,7 +164,7 @@ pub(crate) fn run(
             .map_err(|source| io_err(dir, source))?;
     }
 
-    crate::fail::point("flush.pre_publish");
+    crate::storage::fail::point("flush.pre_publish");
     let flushed_tables: Vec<TableName> = written.iter().map(|(t, _)| t.clone()).collect();
     let version = shared.commit(
         |new_version| {
@@ -181,7 +181,7 @@ pub(crate) fn run(
         &flushed_tables,
     )?;
 
-    crate::fail::point("flush.pre_ack");
+    crate::storage::fail::point("flush.pre_ack");
     shared.io.ack(version);
     Ok(version)
 }
@@ -190,9 +190,9 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::io::{Io, Op};
-    use crate::manifest::TableName;
-    use crate::store::{Store, StoreOptions};
+    use crate::storage::io::{Io, Op};
+    use crate::storage::manifest::TableName;
+    use crate::storage::{Store, StoreOptions};
     use crate::types::{DataType, Value};
 
     fn temp_dir(tag: &str) -> PathBuf {

@@ -11,7 +11,7 @@ export const meta = {
 // args (from /adelie simplify and /adelie optimize):
 // {
 //   mode: 'simplify' | 'optimize',
-//   scope: "src/store, src/search" | "the whole repository",
+//   scope: "src/storage, src/search" | "the whole repository",
 //   perLens: 2,                 // candidates corroborated per lens; the rest come back unverified
 //   only: ['duplication'],      // narrow the lens set
 //   baseline: "<the numbers the COORDINATOR measured before launching>",

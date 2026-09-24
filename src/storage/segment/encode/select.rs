@@ -29,7 +29,7 @@ fn candidates(col: &Column) -> Vec<Encoding> {
 /// r/2 and 3r/4, clamped to the rows that exist.
 fn build_sample(col: &Column) -> Column {
     let rows = col.len();
-    if rows <= crate::segment::SAMPLE_ROWS {
+    if rows <= crate::storage::segment::SAMPLE_ROWS {
         return col.slice(0, rows);
     }
     let starts = [0, rows / 4, rows / 2, 3 * rows / 4];

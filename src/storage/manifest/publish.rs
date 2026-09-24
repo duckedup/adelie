@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::fail;
-use crate::io::Io;
+use crate::storage::fail;
+use crate::storage::io::Io;
 
 use super::Manifest;
 use super::error::Error;
@@ -122,7 +122,7 @@ fn io_err(path: &std::path::Path, source: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::Op;
+    use crate::storage::io::Op;
     use std::path::Path;
 
     fn temp_dir(tag: &str) -> PathBuf {
