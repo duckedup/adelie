@@ -109,22 +109,26 @@ pub(crate) fn run(
                 engine: entry.engine.clone(),
             })
         })?;
-        let outputs = engine.flush(&entry.schema, batches, shared.opts.max_rows)?;
+        let fields = entry.fields();
+        let outputs = engine.flush(entry, batches, shared.opts.max_rows)?;
 
-        let partition_dir = shared.root.join(&table.db).join(&table.name).join("_");
+        let dir = entry.dir();
+        let partition_dir = Manifest::table_dir(&shared.root, &dir).join("_");
         shared
             .io
             .create_dir_all(&partition_dir)
             .map_err(|source| io_err(&partition_dir, source))?;
 
+        let field_ids: Vec<crate::storage::manifest::FieldId> =
+            entry.schema.iter().map(|f| f.id).collect();
         let mut segments = Vec::with_capacity(outputs.len());
         for output in outputs {
             let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
             let opts = WriterOptions {
-                indexes: engine.indexes(&entry.schema),
+                indexes: engine.indexes(&fields),
                 ..Default::default()
             };
-            let mut writer = segment::Writer::new(Vec::new(), entry.schema.clone(), opts)?;
+            let mut writer = segment::Writer::new(Vec::new(), fields.clone(), opts)?;
             for b in &output {
                 writer.push(b)?;
             }
@@ -138,8 +142,10 @@ pub(crate) fn run(
                 footer_crc: meta.footer_crc,
                 columns: meta.columns,
                 side_files: Vec::new(),
+                dir: dir.clone(),
+                field_ids: field_ids.clone(),
             };
-            let path = Manifest::segment_path(&shared.root, table, &seg);
+            let path = Manifest::segment_path(&shared.root, &seg);
             let file = shared
                 .io
                 .write_new(&path, &bytes)
@@ -192,7 +198,7 @@ mod tests {
     use crate::exec::{Column, Field};
     use crate::storage::io::{Io, Op};
     use crate::storage::manifest::TableName;
-    use crate::storage::{Store, StoreOptions};
+    use crate::storage::{Store, StoreOptions, TableSpec};
     use crate::types::{DataType, Value};
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -229,18 +235,19 @@ mod tests {
         let table = TableName::new("d", "t");
         let (io, log) = Io::recording();
         let store = Store::open_with_io(&dir, StoreOptions::default(), io).unwrap();
-        store.create_table(&table, "append", schema()).unwrap();
+        store
+            .create_table(TableSpec::new(table.clone(), schema()))
+            .unwrap();
         // `create_table` publishes its own manifest version; clear that out so the first
         // flush's log can be checked in isolation.
         log.lock().unwrap().clear();
         store.write(&table, batch(1)).unwrap();
 
+        // The table's segments live under its id directory (D0012), not its name.
+        let table_dir = store.snapshot().table(&table).unwrap().dir();
+        let seg_dir = dir.join(&table_dir).join("_");
         // Segment ids start at 0 (a fresh manifest's `next_segment_id`).
-        let seg_path = dir
-            .join("d")
-            .join("t")
-            .join("_")
-            .join("0000000000000000.seg");
+        let seg_path = seg_dir.join("0000000000000000.seg");
         let root_manifest = dir.join("manifest");
         let root_tmp = dir.join("manifest.tmp");
 
@@ -261,12 +268,8 @@ mod tests {
 
         store.write(&table, batch(1)).unwrap();
         let second_log = log.lock().unwrap().clone();
-        let seg_path2 = dir
-            .join("d")
-            .join("t")
-            .join("_")
-            .join("0000000000000001.seg");
-        let part_dir = dir.join("d").join("t").join("_");
+        let seg_path2 = seg_dir.join("0000000000000001.seg");
+        let part_dir = seg_dir.clone();
         let version = store.snapshot().version();
         assert_eq!(
             second_log,

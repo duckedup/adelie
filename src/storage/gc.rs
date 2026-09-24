@@ -30,7 +30,7 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
         if live.iter().any(|s| s.names_segment(&g.table, g.segment.id)) {
             continue;
         }
-        let path = Manifest::segment_path(&shared.root, &g.table, &g.segment);
+        let path = Manifest::segment_path(&shared.root, &g.segment);
         shared
             .io
             .remove(&path)
@@ -99,7 +99,7 @@ fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::storage::io::Io) -> Result<
 #[cfg(test)]
 mod tests {
     use crate::exec::{Column, Field};
-    use crate::storage::{Store, StoreOptions};
+    use crate::storage::{Store, StoreOptions, TableSpec};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -142,7 +142,9 @@ mod tests {
         };
         let store = Store::open(&dir, opts).unwrap();
         let table = crate::storage::manifest::TableName::new("d", "t");
-        store.create_table(&table, "append", schema()).unwrap();
+        store
+            .create_table(TableSpec::new(table.clone(), schema()))
+            .unwrap();
         store.write(&table, batch(1)).unwrap();
         store.write(&table, batch(2)).unwrap();
 
@@ -154,14 +156,11 @@ mod tests {
             .iter()
             .map(|s| s.id)
             .collect();
+        let table_dir = view.table(&table).unwrap().dir();
+        let seg_dir = crate::storage::manifest::Manifest::table_dir(&dir, &table_dir).join("_");
         let paths: Vec<PathBuf> = old_ids
             .iter()
-            .map(|id| {
-                dir.join("d")
-                    .join("t")
-                    .join("_")
-                    .join(format!("{id:016x}.seg"))
-            })
+            .map(|id| seg_dir.join(format!("{id:016x}.seg")))
             .collect();
 
         store.compact(&table).unwrap().unwrap();

@@ -3,9 +3,10 @@
 
 use std::sync::Arc;
 
-use crate::exec::{Batch, Field};
-use crate::storage::manifest::{SegmentEntry, TableEntry};
+use crate::exec::Batch;
+use crate::storage::manifest::{FieldId, SegmentEntry, TableEntry};
 
+use super::sort::sort_rows;
 use super::{Engine, MergePlan, ScanPlan};
 use crate::storage::{Error, StoreOptions};
 
@@ -19,23 +20,37 @@ impl Engine for Append {
 
     fn flush(
         &self,
-        _schema: &[Field],
+        table: &TableEntry,
         batches: &[Arc<Batch>],
         max_rows: usize,
     ) -> Result<Vec<Vec<Batch>>, Error> {
-        Ok(split_into_segments(
-            batches.iter().map(|b| (**b).clone()),
-            max_rows,
-        ))
+        if table.order_by.is_empty() {
+            return Ok(split_into_segments(
+                batches.iter().map(|b| (**b).clone()),
+                max_rows,
+            ));
+        }
+        let sorted = sort_rows(
+            &table.fields(),
+            &batches.iter().map(|b| (**b).clone()).collect::<Vec<_>>(),
+            &order_positions(table),
+        )?;
+        Ok(split_into_segments(sorted.into_iter(), max_rows))
     }
 
     fn merge(
         &self,
-        _schema: &[Field],
+        table: &TableEntry,
         inputs: Vec<Vec<Batch>>,
         max_rows: usize,
     ) -> Result<Vec<Vec<Batch>>, Error> {
-        Ok(split_into_segments(inputs.into_iter().flatten(), max_rows))
+        // Inputs arrive in seq order, so `sort_rows`'s stable tie-break keeps that order.
+        let flattened: Vec<Batch> = inputs.into_iter().flatten().collect();
+        if table.order_by.is_empty() {
+            return Ok(split_into_segments(flattened.into_iter(), max_rows));
+        }
+        let sorted = sort_rows(&table.fields(), &flattened, &order_positions(table))?;
+        Ok(split_into_segments(sorted.into_iter(), max_rows))
     }
 
     fn resolve(&self, table: &TableEntry) -> ScanPlan {
@@ -52,6 +67,24 @@ impl Engine for Append {
         }
         plans
     }
+}
+
+/// Each `table.order_by` field id, as an index into `table.schema` (and so into `table.fields()`
+/// and every batch built from it).
+fn order_positions(table: &TableEntry) -> Vec<usize> {
+    table
+        .order_by
+        .iter()
+        .map(|id| position_of(table, *id))
+        .collect()
+}
+
+fn position_of(table: &TableEntry, id: FieldId) -> usize {
+    table
+        .schema
+        .iter()
+        .position(|f| f.id == id)
+        .expect("order_by only ever names a field id present in schema")
 }
 
 /// Concatenates `batches` in order, starting a new segment each time the next batch would push
@@ -133,9 +166,13 @@ fn close_run(plans: &mut Vec<MergePlan>, partition: &str, run: &mut Vec<u64>, mi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::Field;
     use crate::storage::engines::engine_by_name;
-    use crate::storage::manifest::{Predicate, TableName, Tombstone};
+    use crate::storage::manifest::{
+        FieldId, Predicate, SchemaField, TableId, TableName, Tombstone,
+    };
     use crate::types::{DataType, Value};
+    use std::collections::BTreeMap;
 
     fn field() -> Field {
         Field {
@@ -163,14 +200,27 @@ mod tests {
             footer_crc: 0,
             columns: Vec::new(),
             side_files: Vec::new(),
+            dir: "d/0000000000000001".to_string(),
+            field_ids: vec![FieldId(1)],
         }
     }
 
     fn table(segments: Vec<SegmentEntry>, tombstones: Vec<Tombstone>) -> TableEntry {
         TableEntry {
+            id: TableId(1),
             name: TableName::new("d", "t"),
             engine: "append".to_string(),
-            schema: vec![field()],
+            schema: vec![SchemaField {
+                id: FieldId(1),
+                field: field(),
+            }],
+            next_field_id: 2,
+            key: vec![],
+            version: None,
+            order_by: vec![],
+            partition_by: None,
+            ttl: None,
+            options: BTreeMap::new(),
             segments,
             tombstones,
         }
@@ -186,7 +236,8 @@ mod tests {
     fn flush_never_splits_a_batch_and_starts_a_new_segment_past_max_rows() {
         let batches: Vec<Arc<Batch>> =
             vec![Arc::new(batch(3)), Arc::new(batch(3)), Arc::new(batch(3))];
-        let out = Append.flush(&[field()], &batches, 5).unwrap();
+        let t = table(vec![], vec![]);
+        let out = Append.flush(&t, &batches, 5).unwrap();
         let rows_per_seg: Vec<usize> = out
             .iter()
             .map(|s| s.iter().map(Batch::rows).sum())
@@ -198,8 +249,96 @@ mod tests {
     #[test]
     fn merge_concatenates_inputs_in_order_and_splits_the_same_way() {
         let inputs = vec![vec![batch(4)], vec![batch(4)]];
-        let out = Append.merge(&[field()], inputs, 5).unwrap();
+        let t = table(vec![], vec![]);
+        let out = Append.merge(&t, inputs, 5).unwrap();
         assert_eq!(out, vec![vec![batch(4)], vec![batch(4)]]);
+    }
+
+    fn int_batch(vals: &[i64]) -> Batch {
+        let vs: Vec<Value> = vals.iter().map(|&n| Value::Int64(n)).collect();
+        Batch::new(
+            vec![field()],
+            vec![crate::exec::Column::from_values(&DataType::Int64, &vs).unwrap()],
+        )
+        .unwrap()
+    }
+
+    /// Flattens every segment's batches' single `a` column into one `Vec<i64>`.
+    fn int_rows(out: &[Vec<Batch>]) -> Vec<i64> {
+        out.iter()
+            .flatten()
+            .flat_map(|b| {
+                (0..b.rows()).map(|i| match b.column(0).get(i) {
+                    Value::Int64(v) => v,
+                    other => panic!("expected Int64, got {other:?}"),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flush_sorts_by_order_by_and_leaves_an_unordered_table_untouched() {
+        let batches: Vec<Arc<Batch>> =
+            vec![Arc::new(int_batch(&[5, 2])), Arc::new(int_batch(&[4, 1]))];
+
+        let unordered = table(vec![], vec![]);
+        let out = Append.flush(&unordered, &batches, 10).unwrap();
+        assert_eq!(int_rows(&out), vec![5, 2, 4, 1]);
+
+        let ordered = TableEntry {
+            order_by: vec![FieldId(1)],
+            ..table(vec![], vec![])
+        };
+        let out = Append.flush(&ordered, &batches, 10).unwrap();
+        assert_eq!(out.len(), 1, "small enough to land in one segment");
+        assert_eq!(int_rows(&out), vec![1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn merge_sorts_by_order_by_with_ties_kept_in_seq_order() {
+        let inputs = vec![vec![int_batch(&[3, 9])], vec![int_batch(&[1, 7])]];
+        let ordered = TableEntry {
+            order_by: vec![FieldId(1)],
+            ..table(vec![], vec![])
+        };
+        let out = Append.merge(&ordered, inputs, 10).unwrap();
+        assert_eq!(int_rows(&out), vec![1, 3, 7, 9]);
+
+        // Ties on the sort key: `b` tells the rows apart, and the earlier input (lower seq) must
+        // come first, so reversing the inputs at compaction goes red.
+        let b = Field {
+            name: "b".to_string(),
+            ty: DataType::Int64,
+        };
+        let pairs = |rows: &[(i64, i64)]| {
+            let col = |f: fn(&(i64, i64)) -> i64| {
+                let vals: Vec<Value> = rows.iter().map(|r| Value::Int64(f(r))).collect();
+                crate::exec::Column::from_values(&DataType::Int64, &vals).unwrap()
+            };
+            Batch::new(vec![field(), b.clone()], vec![col(|r| r.0), col(|r| r.1)]).unwrap()
+        };
+        let mut two_cols = ordered.clone();
+        two_cols.schema.push(SchemaField {
+            id: FieldId(2),
+            field: b.clone(),
+        });
+        let inputs = vec![
+            vec![pairs(&[(1, 10), (2, 20)])],
+            vec![pairs(&[(0, 5), (1, 11)])],
+        ];
+        let out = Append.merge(&two_cols, inputs, 10).unwrap();
+        let rows: Vec<(Value, Value)> = out
+            .iter()
+            .flatten()
+            .flat_map(|batch| {
+                (0..batch.rows()).map(|i| (batch.column(0).get(i), batch.column(1).get(i)))
+            })
+            .collect();
+        let want: Vec<(Value, Value)> = [(0, 5), (1, 10), (1, 11), (2, 20)]
+            .iter()
+            .map(|&(a, b)| (Value::Int64(a), Value::Int64(b)))
+            .collect();
+        assert_eq!(rows, want);
     }
 
     #[test]

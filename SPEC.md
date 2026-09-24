@@ -135,7 +135,9 @@ compares lexicographically by element; a shorter prefix sorts first, and a NULL 
 after any non-null element and equals another NULL element; LIST columns report only a null
 count in stats, no min/max. SQL equality is separate from the
 order: NULL gives unknown, `NaN = NaN` is false, `-0.0 = 0.0` is true, and different kinds
-give unknown (the binder casts before it compares).
+give unknown (the binder casts before it compares). A sort key (`ORDER BY`) orders `NULL`
+after every non-null value, whatever the column's type; rows tied on the full key keep the
+order they were written in.
 
 **Fitting a column.** Writing a value into a typed column coerces losslessly and never parses
 a string: `coerce(value, column_type) -> Option<Value>`.
@@ -255,7 +257,8 @@ every change. Its format is D0009; ids are D0012.
 A segment is referenced by the directory the manifest records for it, not by a path derived from
 its table. A migration therefore reuses a segment without moving it, and several tables (a
 swapped table and the one kept for `REVERT`) may reference one file; GC deletes a file only when
-no table references it (§19).
+no table references it (§19). A segment written before D0012 keeps the `<db>/<name>/` directory
+it was written to, and moves into `<db>/<table-id>/` only when compaction rewrites it.
 
 **Format rule.** On-disk formats are additive only. A new encoding or manifest field must not
 change how existing bytes are read. A version bump is one-way and recorded in a decision.
@@ -721,7 +724,7 @@ change without a rename.
 
 | Engine | Rows | Merge policy |
 |---|---|---|
-| `append` | every row kept | none; compaction only re-sorts and applies tombstones. The default, and adelie today |
+| `append` | every row kept | none; flush and compaction both sort by `ORDER BY`, and compaction also applies tombstones. The default, and adelie today |
 | `latest` | newest row per key | keeps the row with the highest `VERSION` value per key, or the highest commit sequence when the table declares no `VERSION` |
 | `rollup` | one row per key | folds mergeable aggregate states (§8); what `CREATE ROLLUP` (§16.1) is built on |
 | `vector` | every row kept | maintains a nearest-neighbour index over an embedding column (nidus) |
@@ -759,7 +762,8 @@ CREATE TABLE users (id UINT64, email STRING, seen TIMESTAMP)
 - **Errors teach.** `KEY` on `append` names `latest`. `PRIMARY KEY` is rejected with a pointer
   to `ENGINE = latest KEY (…)`, because `latest` never rejects a duplicate, and `PRIMARY KEY`
   would promise a check that does not exist. `ALTER TABLE … SET ENGINE` shows the
-  `CREATE TABLE … AS SELECT` to run instead.
+  `CREATE TABLE … AS SELECT` to run instead. `KEY` not a prefix of `ORDER BY` names both and
+  suggests the `ORDER BY` to use instead. `ENGINE = ` naming one not yet built says which are.
 - **Visible afterwards.** `SHOW CREATE TABLE` prints every clause, defaults included;
   `adelie.tables` lists them; `EXPLAIN` names the engine's read-time work ("latest: merging 12
   unmerged segments by key").

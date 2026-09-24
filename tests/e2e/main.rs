@@ -4,3 +4,4 @@
 mod segment;
 mod slt;
 mod store;
+mod tablespec;

@@ -32,9 +32,11 @@ pub trait Engine: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     /// Buffered batches, in arrival order, grouped into one `Vec<Batch>` per output segment.
+    /// Takes the table, not just its schema, since engines own their layout (SPEC §18) and
+    /// `latest` will need KEY too.
     fn flush(
         &self,
-        schema: &[Field],
+        table: &TableEntry,
         batches: &[Arc<Batch>],
         max_rows: usize,
     ) -> Result<Vec<Vec<Batch>>, Error>;
@@ -43,9 +45,10 @@ pub trait Engine: Send + Sync + 'static {
     fn plan_merge(&self, table: &TableEntry, opts: &StoreOptions) -> Vec<MergePlan>;
 
     /// Input rows, one `Vec<Batch>` per input in seq order, merged into output segments.
+    /// Takes the table for the same reason `flush` does.
     fn merge(
         &self,
-        schema: &[Field],
+        table: &TableEntry,
         inputs: Vec<Vec<Batch>>,
         max_rows: usize,
     ) -> Result<Vec<Vec<Batch>>, Error>;
@@ -60,6 +63,7 @@ pub trait Engine: Send + Sync + 'static {
 }
 
 mod append;
+mod sort;
 
 pub use append::Append;
 

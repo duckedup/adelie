@@ -22,7 +22,7 @@ pub(crate) fn scan(
         .ok_or_else(|| Error::UnknownTable(name.to_string()))?;
     let mut batches = Vec::new();
     for seg in &table.segments {
-        batches.extend(read_segment(snapshot.root(), name, seg)?);
+        batches.extend(read_segment(snapshot.root(), seg)?);
     }
     for b in buffered {
         batches.push((**b).clone());
@@ -30,13 +30,10 @@ pub(crate) fn scan(
     Ok(batches)
 }
 
-/// Reads one segment file into every row group as a `Batch` over all its columns.
-pub(crate) fn read_segment(
-    root: &Path,
-    table: &TableName,
-    seg: &SegmentEntry,
-) -> Result<Vec<Batch>, Error> {
-    let path = Manifest::segment_path(root, table, seg);
+/// Reads one segment file into every row group as a `Batch` over all its columns. Found by its
+/// own recorded directory (`seg.dir`), never one derived from the table that owns it (D0012).
+pub(crate) fn read_segment(root: &Path, seg: &SegmentEntry) -> Result<Vec<Batch>, Error> {
+    let path = Manifest::segment_path(root, seg);
     let bytes = std::fs::read(&path).map_err(|source| {
         if source.kind() == std::io::ErrorKind::NotFound {
             Error::SnapshotExpired {
@@ -59,7 +56,7 @@ pub(crate) fn read_segment(
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::storage::manifest::{Commit, Edit};
+    use crate::storage::manifest::{Commit, Edit, TableSpec};
     use crate::storage::segment::{Writer, WriterOptions};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
@@ -96,7 +93,20 @@ mod tests {
     fn scan_reads_segments_then_appends_buffered_rows_in_order() {
         let root = temp_dir("scan");
         let table = TableName::new("d", "t");
-        let dir = root.join("d").join("t").join("_");
+
+        let created = Commit {
+            base: 0,
+            edits: vec![Edit::CreateTable {
+                spec: TableSpec::new(table.clone(), schema()),
+            }],
+        }
+        .apply(&Manifest::empty(), 0)
+        .unwrap();
+        let entry = created.table(&table).unwrap();
+        let table_dir = entry.dir();
+        let field_ids: Vec<_> = entry.schema.iter().map(|f| f.id).collect();
+
+        let dir = Manifest::table_dir(&root, &table_dir).join("_");
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut writer = Writer::new(Vec::new(), schema(), WriterOptions::default()).unwrap();
@@ -111,24 +121,19 @@ mod tests {
             footer_crc: meta.footer_crc,
             columns: meta.columns,
             side_files: Vec::new(),
+            dir: table_dir,
+            field_ids,
         };
-        std::fs::write(Manifest::segment_path(&root, &table, &seg), &bytes).unwrap();
+        std::fs::write(Manifest::segment_path(&root, &seg), &bytes).unwrap();
 
         let manifest = Commit {
-            base: 0,
-            edits: vec![
-                Edit::CreateTable {
-                    name: table.clone(),
-                    engine: "append".to_string(),
-                    schema: schema(),
-                },
-                Edit::AddSegments {
-                    table: table.clone(),
-                    segments: vec![seg],
-                },
-            ],
+            base: created.version,
+            edits: vec![Edit::AddSegments {
+                table: table.clone(),
+                segments: vec![seg],
+            }],
         }
-        .apply(&Manifest::empty(), 0)
+        .apply(&created, 0)
         .unwrap();
         let snapshot = Snapshot::new(root.clone(), manifest);
 
@@ -144,7 +149,6 @@ mod tests {
     #[cfg_attr(miri, ignore)] // touches the real filesystem
     fn a_missing_segment_file_is_snapshot_expired() {
         let root = temp_dir("missing-seg");
-        let table = TableName::new("d", "t");
         let seg = SegmentEntry {
             id: 1,
             partition: "_".to_string(),
@@ -154,8 +158,10 @@ mod tests {
             footer_crc: 0,
             columns: Vec::new(),
             side_files: Vec::new(),
+            dir: "d/t".to_string(),
+            field_ids: Vec::new(),
         };
-        let err = read_segment(&root, &table, &seg).unwrap_err();
+        let err = read_segment(&root, &seg).unwrap_err();
         assert!(matches!(err, Error::SnapshotExpired { .. }));
     }
 }

@@ -120,6 +120,56 @@ file no reader understands may be a deletion vector, and skipping it would resur
 | removed_at_ms | uvarint |
 | segment | record, `encode_segment` with an empty schema (no column stats) |
 
+### Additive fields (D0012, adelie-2hh.1)
+
+Every field below is trailing on its record: a decoder that reaches the end of the record
+before finding it treats it as absent, per the "absent decodes to" column. This is what keeps
+a manifest written before D0012 readable without a version bump.
+
+`header_fields`, trailing on the record documented above:
+
+| field | type | absent decodes to |
+|---|---|---|
+| next_table_id | uvarint | 0 |
+
+A schema field's record (`(str name, type_desc)` above), trailing field:
+
+| field | type | absent decodes to |
+|---|---|---|
+| id | uvarint | 0 (field id unassigned; backfilled on open) |
+
+The table entry's own record (`db`, `name`, `engine`, `schema`, `segments`, `tombstones`
+above) gets one further trailing record, `definition`, itself absent as a whole when an old
+manifest's table-entry record ends right after `tombstones`:
+
+| field | type | absent decodes to |
+|---|---|---|
+| id | uvarint | 0 (table id unassigned; backfilled on open) |
+| next_field_id | uvarint | 0 |
+| key | field-id list (uvarint count, then uvarint per id) | empty |
+| version | u8 tag (0 absent, 1 present), then uvarint field id if present | `None` |
+| order_by | field-id list | empty |
+| partition_by | u8 tag, then (uvarint column field id, uvarint bucket nanos) if present | `None` |
+| ttl | u8 tag, then (uvarint column field id, uvarint after nanos) if present | `None` |
+| options | uvarint count, then `(str key, str value)` per entry | empty |
+
+A `SegmentEntry` record (`id`, `partition`, `seq`, `rows`, `bytes`, `footer_crc`, `columns`,
+`side_files` above), trailing fields:
+
+| field | type | absent decodes to |
+|---|---|---|
+| dir | str | `""` (a legacy segment lived at `<db>/<name>`, not a directory the record names) |
+| field_ids | record (field-id list) | empty (a legacy segment's `columns` are positional against the schema instead) |
+
+**Ids on open.** Assigning what a pre-D0012 manifest lacks is a pure, deterministic backfill
+done at decode, never an upgrade commit: tables get ids in name order (the manifest's table
+list is kept name-sorted by every commit that inserts one), and each table's columns get field
+ids in schema order, both numbered past any id already present. A segment or garbage entry
+with no recorded `dir` keeps the `<db>/<name>` directory it was actually written to; one with
+empty `field_ids` gets the schema's ids in schema order, since a segment's columns were
+positional before D0012. Decoding the same bytes twice agrees, and the assignment is persisted
+only by the next ordinary commit — opening a store for reads alone writes nothing.
+
 ## The commit rules
 
 - **`seq`.** A flush's `AddSegments` sets every new segment's `seq` to the commit's new version
@@ -134,8 +184,8 @@ file no reader understands may be a deletion vector, and skipping it would resur
 
 | edit | conflicts when |
 |---|---|
-| `CreateTable` | a table of that name already exists; `Usage` if `db` or `name` is not one path component (empty, `.`, `..`, or holding `/`, `\` or NUL) |
-| `AddSegments` | never (appends never conflict); `Usage` if a segment's `columns` length doesn't match the table's schema length |
+| `CreateTable` | a table of that name already exists; `Usage` if `db` or `name` is not one path component (empty, `.`, `..`, or holding `/`, `\` or NUL); also `Usage` — or that rule's own error variant (`UnknownEngine`, `KeyNotAllowed`, `KeyRequired`, `KeyNotSortPrefix`) — for every `TableSpec::validate` rule (SPEC §18), checked before the already-exists check |
+| `AddSegments` | never (appends never conflict); `Usage` if a segment's `columns` length doesn't match the table's schema length, if `field_ids` differ from the schema's, or if `dir` is empty or unsafe |
 | `RemoveSegments` | any named id is not live in the current manifest |
 | `AddTombstone` | never, once the table exists; `Usage` for a null value, an unknown column, or a value that does not fit the column's type. The value is stored coerced to that exact type (a DECIMAL rescaled to its scale), because the codec writes a DECIMAL's unscaled digits and reads them back at the column's scale |
 | `ForgetGarbage` | never; missing ids are ignored |
