@@ -12,7 +12,7 @@ export const meta = {
 // {
 //   ref: "PR #73" | "austin/foo vs main" | "working tree",  // human label
 //   diffCmd: "gh pr diff 73" | "git diff main...HEAD",       // how an agent reads the diff
-//   changed: ["src/store/read.rs", ...],
+//   changed: ["src/storage/read.rs", ...],
 //   laws: [ ...adelie-check laws findings... ],               // deterministic, already true
 //   issues: ["adelie-vnn", ...],   // the ticket(s) this change claims to finish, if any
 //   effort: "medium" | "high",    // high = 3 diverse skeptics per finding, majority rules

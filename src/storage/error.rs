@@ -1,10 +1,10 @@
 //! `Error`: the store's error type (SPEC §6, §18). Hand-written, following the style of
-//! `src/segment/error.rs`: one arm per variant, every message names the table or path.
+//! `src/storage/segment/error.rs`: one arm per variant, every message names the table or path.
 
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::{manifest, segment};
+use super::{manifest, segment};
 
 /// A store operation gone wrong.
 #[derive(Debug)]

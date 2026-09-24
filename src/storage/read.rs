@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::exec::Batch;
-use crate::manifest::{Manifest, SegmentEntry, Snapshot, TableName};
-use crate::segment;
+use crate::storage::manifest::{Manifest, SegmentEntry, Snapshot, TableName};
+use crate::storage::segment;
 
 use super::Error;
 
@@ -59,8 +59,8 @@ pub(crate) fn read_segment(
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::manifest::{Commit, Edit};
-    use crate::segment::{Writer, WriterOptions};
+    use crate::storage::manifest::{Commit, Edit};
+    use crate::storage::segment::{Writer, WriterOptions};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
 

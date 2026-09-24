@@ -39,7 +39,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{Commit, Edit};
+    use crate::storage::manifest::{Commit, Edit};
 
     #[test]
     fn names_segment_reflects_the_wrapped_manifest() {

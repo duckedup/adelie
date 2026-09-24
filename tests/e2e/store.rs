@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use adelie::exec::{Batch, Column, Field};
-use adelie::manifest::TableName;
-use adelie::store::{Error, Reader, Store, StoreOptions};
+use adelie::storage::manifest::TableName;
+use adelie::storage::{Error, Reader, Store, StoreOptions};
 use adelie::types::{DataType, Value};
 use adelie_harness::crash::{CrashTarget, Kill, Plan, Row, run};
 

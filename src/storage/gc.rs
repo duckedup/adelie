@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Weak};
 
-use crate::manifest::{Edit, Manifest};
+use crate::storage::manifest::{Edit, Manifest};
 
 use super::{Error, Shared, io_err, now_ms};
 
@@ -16,7 +16,7 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
     let grace_ms = shared.opts.gc_grace.as_millis() as u64;
     let now = now_ms();
 
-    let live: Vec<Arc<crate::manifest::Snapshot>> = {
+    let live: Vec<Arc<crate::storage::manifest::Snapshot>> = {
         let mut live = shared.live.lock().unwrap();
         live.retain(|w| w.strong_count() > 0);
         live.iter().filter_map(Weak::upgrade).collect()
@@ -56,7 +56,7 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
 pub(crate) fn cleanup_orphans(
     root: &Path,
     manifest: &Manifest,
-    io: &crate::io::Io,
+    io: &crate::storage::io::Io,
 ) -> Result<(), Error> {
     let mut keep: HashSet<u64> = HashSet::new();
     for t in &manifest.tables {
@@ -66,7 +66,7 @@ pub(crate) fn cleanup_orphans(
     walk(root, &keep, io)
 }
 
-fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::io::Io) -> Result<(), Error> {
+fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::storage::io::Io) -> Result<(), Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -99,7 +99,7 @@ fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::io::Io) -> Result<(), Error
 #[cfg(test)]
 mod tests {
     use crate::exec::{Column, Field};
-    use crate::store::{Store, StoreOptions};
+    use crate::storage::{Store, StoreOptions};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -141,7 +141,7 @@ mod tests {
             ..StoreOptions::default()
         };
         let store = Store::open(&dir, opts).unwrap();
-        let table = crate::manifest::TableName::new("d", "t");
+        let table = crate::storage::manifest::TableName::new("d", "t");
         store.create_table(&table, "append", schema()).unwrap();
         store.write(&table, batch(1)).unwrap();
         store.write(&table, batch(2)).unwrap();

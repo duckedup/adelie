@@ -3,8 +3,8 @@
 //! length-prefixed, so a reader ignores fields it doesn't know and new fields are additive.
 
 use crate::exec::{ColumnStats, Field};
-use crate::segment::wire::{Cursor, Sink};
-use crate::segment::{DecodeError, footer, type_id, value};
+use crate::storage::segment::wire::{Cursor, Sink};
+use crate::storage::segment::{DecodeError, footer, type_id, value};
 use crate::types::DataType;
 
 use super::error::Error;
@@ -20,10 +20,11 @@ const HEADER_LEN: usize = 8;
 pub(crate) fn encode(m: &Manifest) -> Vec<u8> {
     // `write_trailer` hard-codes the segment's own FORMAT_VERSION into the trailer's version
     // field; keep MANIFEST_VERSION equal to it until the two formats deliberately diverge.
-    debug_assert_eq!(MANIFEST_VERSION, crate::segment::FORMAT_VERSION);
+    debug_assert_eq!(MANIFEST_VERSION, crate::storage::segment::FORMAT_VERSION);
 
     let body = encode_body(m);
-    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + crate::segment::TRAILER_LEN);
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
     out.extend_from_slice(&MANIFEST_MAGIC);
     out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
     footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);
@@ -500,7 +501,8 @@ pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
     body.record(|r| encode_garbage(m, r));
     let body = body.into_vec();
 
-    let mut out = Vec::with_capacity(HEADER_LEN + body.len() + crate::segment::TRAILER_LEN);
+    let mut out =
+        Vec::with_capacity(HEADER_LEN + body.len() + crate::storage::segment::TRAILER_LEN);
     out.extend_from_slice(&MANIFEST_MAGIC);
     out.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
     footer::write_trailer(&mut out, MANIFEST_MAGIC, &body);

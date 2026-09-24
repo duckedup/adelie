@@ -1,13 +1,18 @@
-//! The store (SPEC §5, §6, §18, D0009).
+//! Storage (SPEC §5, §6, §14, §18, D0009): the store, with the segment format, the manifest and
+//! the table engines beneath it.
 
 mod buffer;
 mod compact;
-mod engine;
+pub mod engines;
 mod error;
+mod fail;
 mod flush;
 mod gc;
+mod io;
 mod lock;
+pub mod manifest;
 mod read;
+pub mod segment;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -18,12 +23,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::exec::{Batch, Field};
-use crate::io::Io;
-use crate::manifest::{self, Commit, Edit, Predicate, Publisher, Snapshot, TableEntry, TableName};
+use crate::storage::io::Io;
+use crate::storage::manifest::{
+    Commit, Edit, Predicate, Publisher, Snapshot, TableEntry, TableName,
+};
 
 use buffer::{FlushTicket, should_flush};
 
-pub use engine::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
+pub use engines::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
 pub use error::Error;
 
 /// `Store::open` defaults and the compaction/GC policy (SPEC §6, §18).
@@ -322,9 +329,9 @@ impl Store {
     pub fn compact(&self, table: &TableName) -> Result<Option<u64>, Error> {
         match compact::prepare(&self.shared, table)? {
             Some(prepared) => {
-                crate::fail::point("compact.pre_publish");
+                crate::storage::fail::point("compact.pre_publish");
                 let version = compact::commit(&self.shared, prepared)?;
-                crate::fail::point("compact.pre_gc");
+                crate::storage::fail::point("compact.pre_gc");
                 self.gc()?;
                 Ok(Some(version))
             }
@@ -589,7 +596,7 @@ mod tests {
                 &table(),
                 vec![Predicate {
                     column: "batch".to_string(),
-                    op: crate::manifest::CmpOp::Eq,
+                    op: crate::storage::manifest::CmpOp::Eq,
                     value: Value::UInt64(0),
                 }],
             )
@@ -638,7 +645,7 @@ mod tests {
     fn opening_a_manifest_with_an_unknown_engine_names_it() {
         let dir = temp_dir("unknown-engine-open");
         std::fs::create_dir_all(&dir).unwrap();
-        let m = crate::manifest::Commit {
+        let m = crate::storage::manifest::Commit {
             base: 0,
             edits: vec![Edit::CreateTable {
                 name: table(),
@@ -646,7 +653,7 @@ mod tests {
                 schema: schema(),
             }],
         }
-        .apply(&crate::manifest::Manifest::empty(), 0)
+        .apply(&crate::storage::manifest::Manifest::empty(), 0)
         .unwrap();
         Publisher::new(dir.clone(), Io::real(), 8)
             .publish(&m)

@@ -4,7 +4,7 @@ Staff-level performance work: make adelie do the same thing faster or cheaper, a
 with a number**. Build time and dependency weight count as performance here, because SPEC §1
 makes them CI-asserted budgets (D0004).
 
-The target is a scope, not a ticket: a path (`src/store`), a subsystem in words ("the write
+The target is a scope, not a ticket: a path (`src/storage`), a subsystem in words ("the write
 path"), or nothing at all, which means the whole repository.
 
 **The two laws of this lane.** *Results do not move* — same query results, same ordering,

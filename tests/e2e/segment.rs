@@ -1,4 +1,4 @@
-//! U10 (adelie-44e): public-API-only tests for `adelie::segment` (SPEC §5, D0008) — round
+//! U10 (adelie-44e): public-API-only tests for `adelie::storage::segment` (SPEC §5, D0008) — round
 //! trip across row groups, stats, determinism, index pruning, corruption and fuzzing.
 
 use std::cmp::Ordering;
@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::ops::Range;
 
 use adelie::exec::{Batch, Column, Field, coalesce_companion};
-use adelie::segment::*;
+use adelie::storage::segment::*;
 use adelie::types::{DataType, Decimal, Ip, Value, companion_name, total_cmp};
 use adelie_harness::rng::SplitMix64;
 

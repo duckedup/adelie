@@ -2,8 +2,8 @@
 //! summing to `rows`. Applies to BOOL, INT64, UINT64, TIMESTAMP, DATE.
 
 use crate::exec::Bitmap;
-use crate::segment::error::DecodeError;
-use crate::segment::wire::{Cursor, Sink};
+use crate::storage::segment::error::DecodeError;
+use crate::storage::segment::wire::{Cursor, Sink};
 
 /// Reads `nruns`, rejecting a count that could not possibly fit in `rows` or in the bytes
 /// left (before any run-sized `Vec`/`Bitmap` gets allocated).
@@ -242,6 +242,6 @@ mod tests {
     fn max_decode_rows_with_tiny_payload_is_err() {
         let buf = [0xffu8, 0xff, 0xff];
         let mut c = Cursor::new(&buf);
-        assert!(decode_i64(&mut c, crate::segment::MAX_DECODE_ROWS).is_err());
+        assert!(decode_i64(&mut c, crate::storage::segment::MAX_DECODE_ROWS).is_err());
     }
 }

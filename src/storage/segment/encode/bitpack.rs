@@ -1,8 +1,8 @@
 //! Bit-packing (SPEC §5, D0008): LSB-first `BitWriter`/`BitReader`, and the FoR block shared
 //! by FOR, DELTA and DELTA_OF_DELTA (`frame_of_ref.rs`/`delta.rs`, group 2 siblings).
 
-use crate::segment::error::DecodeError;
-use crate::segment::wire::{Cursor, Sink};
+use crate::storage::segment::error::DecodeError;
+use crate::storage::segment::wire::{Cursor, Sink};
 
 /// `bits` in `0..=64`, safe against the shift-overflow a literal `1u64 << 64` would cause.
 fn mask(bits: u8) -> u64 {
