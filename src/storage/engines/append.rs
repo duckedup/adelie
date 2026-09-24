@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::exec::{Batch, Field};
+use crate::exec::Batch;
 use crate::storage::manifest::{FieldId, SegmentEntry, TableEntry};
 
 use super::sort::sort_rows;
@@ -166,6 +166,7 @@ fn close_run(plans: &mut Vec<MergePlan>, partition: &str, run: &mut Vec<u64>, mi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::Field;
     use crate::storage::engines::engine_by_name;
     use crate::storage::manifest::{
         FieldId, Predicate, SchemaField, TableId, TableName, Tombstone,
