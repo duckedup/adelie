@@ -8,7 +8,7 @@ use crate::storage::manifest::{Edit, Manifest, SegmentEntry, TableEntry, TableNa
 use crate::storage::segment::{self, WriterOptions};
 
 use super::engines::{MergePlan, engine_by_name};
-use super::read::read_segment;
+use super::read::read_segment_as;
 use super::{Error, Shared, io_err};
 
 /// The outcome of `prepare`, ready for `commit`. Kept flat (not per-plan) since a table's
@@ -92,7 +92,7 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
         let mut inputs = Vec::with_capacity(plan.inputs.len());
         for &id in &plan.inputs {
             let seg = entry.segments.iter().find(|s| s.id == id).unwrap();
-            inputs.push(read_segment(&shared.root, seg)?);
+            inputs.push(read_segment_as(&shared.root, seg, &entry.schema)?);
         }
         let outputs = engine.merge(entry, inputs, shared.opts.max_rows)?;
 
@@ -123,6 +123,7 @@ pub(crate) fn prepare(shared: &Arc<Shared>, table: &TableName) -> Result<Option<
                 side_files: Vec::new(),
                 dir: dir.clone(),
                 field_ids: field_ids.clone(),
+                file_field_ids: Vec::new(),
             };
             let path = Manifest::segment_path(&shared.root, &seg);
             let file = shared
@@ -247,6 +248,7 @@ mod tests {
                     side_files: vec![],
                     dir: "d/0000000000000001".to_string(),
                     field_ids: vec![FieldId(1)],
+                    file_field_ids: Vec::new(),
                 })
                 .collect(),
             tombstones: vec![crate::storage::manifest::Tombstone {

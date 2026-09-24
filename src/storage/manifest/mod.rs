@@ -1,9 +1,11 @@
 //! Manifest v1 (SPEC §5, §18, D0009, D0012).
 
+mod alter;
 mod codec;
 mod commit;
 mod error;
 mod ids;
+mod lifecycle;
 mod publish;
 mod snapshot;
 mod spec;
@@ -16,8 +18,10 @@ use std::time::Duration;
 use crate::exec::{ColumnStats, Field};
 use crate::types::Value;
 
+pub use alter::{Alter, AlterPlan, explain, plan_alter, rewrites_segments};
 pub use commit::{Commit, Edit};
 pub use error::Error;
+pub use lifecycle::{Job, RetireReason, Retired};
 pub use publish::{MANIFEST_FILE, Publisher};
 pub use snapshot::Snapshot;
 pub use spec::TableSpec;
@@ -108,6 +112,78 @@ pub struct SegmentEntry {
     pub dir: String,
     /// The field id of each entry of `columns`, in the same order.
     pub field_ids: Vec<FieldId>,
+    /// The field id of each column of the segment *file*, in file order; `FieldId(0)` marks a
+    /// file column this entry does not read. Empty means the file's columns are exactly
+    /// `field_ids` (every flush and compaction output). A segment reused by a migration is
+    /// referenced by two tables, each with its own `columns`/`field_ids` view of the one file.
+    pub file_field_ids: Vec<FieldId>,
+}
+
+impl SegmentEntry {
+    /// The file's column ids: `file_field_ids`, or `field_ids` when that is empty.
+    pub fn file_ids(&self) -> &[FieldId] {
+        if self.file_field_ids.is_empty() {
+            &self.field_ids
+        } else {
+            &self.file_field_ids
+        }
+    }
+
+    /// This segment as a table with `schema` sees it: `columns`/`field_ids` realigned to
+    /// `schema` by field id (a field the entry has no stats for gets all-null stats:
+    /// rows = null_count = self.rows, min = max = None), and `file_field_ids` = `file_ids()`
+    /// with every id the entry has no stats for replaced by `FieldId(0)` — the reader then
+    /// yields NULL for it, so data never disagrees with stats. Stored empty when the result
+    /// equals the new `field_ids`.
+    pub fn project_onto(&self, schema: &[SchemaField]) -> SegmentEntry {
+        let field_ids: Vec<FieldId> = schema.iter().map(|f| f.id).collect();
+        let columns: Vec<ColumnStats> = schema
+            .iter()
+            .map(
+                |f| match self.field_ids.iter().position(|&id| id == f.id) {
+                    Some(j) => self.columns[j].clone(),
+                    None => ColumnStats {
+                        rows: self.rows as usize,
+                        null_count: self.rows as usize,
+                        min: None,
+                        max: None,
+                    },
+                },
+            )
+            .collect();
+        // A file column keeps its id only when self itself has real stats for it (was one of
+        // self's own `field_ids`); everything else — a column `self` never read, or the
+        // sentinel `FieldId(0)` — becomes/stays `FieldId(0)`, whether or not `schema` wants it.
+        let file_field_ids: Vec<FieldId> = self
+            .file_ids()
+            .iter()
+            .map(|&id| {
+                if id.0 != 0 && self.field_ids.contains(&id) {
+                    id
+                } else {
+                    FieldId(0)
+                }
+            })
+            .collect();
+        let file_field_ids = if file_field_ids == field_ids {
+            Vec::new()
+        } else {
+            file_field_ids
+        };
+        SegmentEntry {
+            id: self.id,
+            partition: self.partition.clone(),
+            seq: self.seq,
+            rows: self.rows,
+            bytes: self.bytes,
+            footer_crc: self.footer_crc,
+            columns,
+            side_files: self.side_files.clone(),
+            dir: self.dir.clone(),
+            field_ids,
+            file_field_ids,
+        }
+    }
 }
 
 /// A tombstone predicate's comparison operator.
@@ -233,6 +309,12 @@ pub struct Manifest {
     /// Ascending by name.
     pub tables: Vec<TableEntry>,
     pub garbage: Vec<Garbage>,
+    /// The next job id to hand out; starts at 1 (0 is never a job).
+    pub next_job_id: u64,
+    /// Running migrations, ascending by id (SPEC §5 "running jobs", §19).
+    pub jobs: Vec<Job>,
+    /// Entries kept for the grace period, in the order they were retired.
+    pub retired: Vec<Retired>,
 }
 
 impl Manifest {
@@ -243,11 +325,33 @@ impl Manifest {
             next_table_id: 1,
             tables: Vec::new(),
             garbage: Vec::new(),
+            next_job_id: 1,
+            jobs: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
     pub fn table(&self, name: &TableName) -> Option<&TableEntry> {
         self.tables.iter().find(|t| &t.name == name)
+    }
+
+    /// Whether any live table, retired entry or job target lists segment `id`: the reference
+    /// count D0012 asks for ("GC counts references across tables").
+    pub fn references_segment(&self, id: u64) -> bool {
+        let has = |segs: &[SegmentEntry]| segs.iter().any(|s| s.id == id);
+        self.tables.iter().any(|t| has(&t.segments))
+            || self.retired.iter().any(|r| has(&r.entry.segments))
+            || self.jobs.iter().any(|j| has(&j.target.segments))
+    }
+
+    pub fn job(&self, id: u64) -> Option<&Job> {
+        self.jobs.iter().find(|j| j.id == id)
+    }
+
+    /// The running job migrating live table `name`, if any.
+    pub fn job_for(&self, name: &TableName) -> Option<&Job> {
+        let id = self.table(name)?.id;
+        self.jobs.iter().find(|j| j.source == id)
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -298,6 +402,7 @@ mod tests {
             side_files: Vec::new(),
             dir: "d/t".to_string(),
             field_ids: Vec::new(),
+            file_field_ids: Vec::new(),
         }
     }
 
@@ -464,5 +569,188 @@ mod tests {
         let op = CmpOp::Eq;
         let copied = op;
         assert_eq!(op, copied);
+    }
+
+    // ── project_onto ────────────────────────────────────────────────────
+
+    fn schema_field(id: u64, name: &str) -> SchemaField {
+        SchemaField {
+            id: FieldId(id),
+            field: Field {
+                name: name.to_string(),
+                ty: crate::types::DataType::Int64,
+            },
+        }
+    }
+
+    fn stats(v: i64) -> ColumnStats {
+        ColumnStats {
+            rows: 10,
+            null_count: 0,
+            min: Some(Value::Int64(v)),
+            max: Some(Value::Int64(v)),
+        }
+    }
+
+    /// Never reused: `file_field_ids` empty, so `file_ids()` is exactly `field_ids`.
+    fn plain_segment() -> SegmentEntry {
+        let mut s = seg(1, 1);
+        s.rows = 10;
+        s.field_ids = vec![FieldId(1), FieldId(2)];
+        s.columns = vec![stats(1), stats(2)];
+        s
+    }
+
+    /// Reused: the file has a third physical column (id 3) this entry doesn't read.
+    fn reused_segment() -> SegmentEntry {
+        let mut s = plain_segment();
+        s.file_field_ids = vec![FieldId(1), FieldId(2), FieldId(3)];
+        s
+    }
+
+    #[test]
+    fn project_onto_add_gives_the_new_field_all_null_stats() {
+        let s = reused_segment();
+        let schema = vec![
+            schema_field(1, "a"),
+            schema_field(2, "b"),
+            schema_field(4, "c"),
+        ];
+        let p = s.project_onto(&schema);
+        assert_eq!(p.field_ids, vec![FieldId(1), FieldId(2), FieldId(4)]);
+        assert_eq!(p.columns[0], s.columns[0]);
+        assert_eq!(p.columns[1], s.columns[1]);
+        assert_eq!(p.columns[2].rows, p.columns[2].null_count);
+        assert_eq!(p.columns[2].rows, s.rows as usize);
+        assert_eq!(p.columns[2].min, None);
+        assert_eq!(p.columns[2].max, None);
+        // id 3 was never in `field_ids`, so it never gets a slot at all; only the physical
+        // columns the entry actually read (1, 2) survive, id 3 zeroed.
+        assert_eq!(
+            p.file_field_ids,
+            vec![FieldId(1), FieldId(2), FieldId(0)]
+        );
+    }
+
+    #[test]
+    fn project_onto_drop_removes_stats_but_keeps_the_file_id() {
+        let s = reused_segment();
+        let schema = vec![schema_field(1, "a")];
+        let p = s.project_onto(&schema);
+        assert_eq!(p.field_ids, vec![FieldId(1)]);
+        assert_eq!(p.columns, vec![s.columns[0].clone()]);
+        // id 2's stats are gone (not in the new schema), but the file still carries it, so its
+        // slot in file_field_ids keeps the real id, not FieldId(0).
+        assert_eq!(
+            p.file_field_ids,
+            vec![FieldId(1), FieldId(2), FieldId(0)]
+        );
+    }
+
+    #[test]
+    fn project_onto_rename_keeps_stats_and_stores_file_field_ids_empty() {
+        let s = plain_segment();
+        let schema = vec![schema_field(1, "renamed"), schema_field(2, "b")];
+        let p = s.project_onto(&schema);
+        assert_eq!(p.field_ids, vec![FieldId(1), FieldId(2)]);
+        assert_eq!(p.columns, s.columns);
+        assert!(p.file_field_ids.is_empty(), "{:?}", p.file_field_ids);
+    }
+
+    #[test]
+    fn project_onto_a_column_the_entry_never_read_stays_null_even_if_the_target_wants_it() {
+        let s = reused_segment();
+        // The target now wants id 3 too, but `s` never had stats for it — only the file
+        // happened to label that physical column with it — so it must not be resurrected.
+        let schema = vec![
+            schema_field(1, "a"),
+            schema_field(2, "b"),
+            schema_field(3, "c"),
+        ];
+        let p = s.project_onto(&schema);
+        let c3 = &p.columns[2];
+        assert_eq!(c3.rows, c3.null_count);
+        assert_eq!(c3.min, None);
+        assert_eq!(c3.max, None);
+        assert_eq!(
+            p.file_field_ids,
+            vec![FieldId(1), FieldId(2), FieldId(0)]
+        );
+    }
+
+    // ── references_segment / job / job_for ──────────────────────────────
+
+    fn job_with_target(target: TableEntry) -> Job {
+        Job {
+            id: 1,
+            source: TableId(1),
+            snapshot: 0,
+            target,
+            handled: vec![],
+            reused: 0,
+            rewritten: 0,
+        }
+    }
+
+    fn retired_with_entry(entry: TableEntry) -> Retired {
+        Retired {
+            entry,
+            reason: RetireReason::Swapped,
+            retired_at_ms: 0,
+            version: 1,
+            successor_segments: vec![],
+        }
+    }
+
+    #[test]
+    fn references_segment_finds_a_live_table_a_retired_entry_or_a_job_target() {
+        let mut m = Manifest::empty();
+        assert!(!m.references_segment(9));
+
+        let mut live = table_entry();
+        live.segments = vec![seg(9, 1)];
+        m.tables.push(live);
+        assert!(m.references_segment(9));
+        m.tables.clear();
+        assert!(!m.references_segment(9));
+
+        let mut retired_entry = table_entry();
+        retired_entry.segments = vec![seg(9, 1)];
+        m.retired.push(retired_with_entry(retired_entry));
+        assert!(m.references_segment(9));
+        m.retired.clear();
+        assert!(!m.references_segment(9));
+
+        let mut target = table_entry();
+        target.segments = vec![seg(9, 1)];
+        m.jobs.push(job_with_target(target));
+        assert!(m.references_segment(9));
+        m.jobs.clear();
+        assert!(!m.references_segment(9));
+    }
+
+    #[test]
+    fn job_and_job_for_look_up_by_id_and_by_live_table_name() {
+        let mut m = Manifest::empty();
+        let mut source = table_entry();
+        source.id = TableId(5);
+        source.name = TableName::new("d", "t");
+        m.tables.push(source);
+
+        let mut target = table_entry();
+        target.id = TableId(6);
+        let job = job_with_target(target);
+        m.jobs.push(Job {
+            source: TableId(5),
+            ..job
+        });
+
+        assert_eq!(m.job(1).map(|j| j.source), Some(TableId(5)));
+        assert_eq!(m.job(2), None);
+        assert_eq!(
+            m.job_for(&TableName::new("d", "t")).map(|j| j.id),
+            Some(1)
+        );
+        assert_eq!(m.job_for(&TableName::new("d", "other")), None);
     }
 }

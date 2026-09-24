@@ -60,6 +60,49 @@ pub enum Error {
         detail: String,
     },
     Usage(String),
+    NoSuchJob {
+        job: u64,
+    },
+    /// A second migration was started while one was already running on the table.
+    JobRunning {
+        table: String,
+        job: u64,
+    },
+    NothingToRevert {
+        table: String,
+    },
+    /// REVERT refused: restoring would duplicate or lose rows (SPEC §19).
+    RevertStale {
+        table: String,
+        detail: String,
+    },
+    NotDropped {
+        table: String,
+    },
+    /// `DROP COLUMN` on a column engine, KEY or VERSION depends on (SPEC §19: those clauses
+    /// never change for a table's life).
+    FixedColumn {
+        table: String,
+        column: String,
+        clause: String,
+    },
+    /// `DROP COLUMN` on a column a tombstone predicate still names.
+    ColumnInTombstone {
+        table: String,
+        column: String,
+        seq: u64,
+    },
+    /// A rollup (SPEC §16.1, not built) reads this column.
+    ColumnUsedByRollup {
+        table: String,
+        column: String,
+        rollup: String,
+    },
+    /// `PARTITION BY` or a type change: planned by SPEC §19 but not implemented (D0013).
+    MigrationNotBuilt {
+        table: String,
+        kind: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -117,6 +160,45 @@ impl fmt::Display for Error {
             }
             Error::Conflict { table, detail } => write!(f, "table {table}: conflict: {detail}"),
             Error::Usage(msg) => write!(f, "{msg}"),
+            Error::NoSuchJob { job } => write!(f, "no job with id {job}"),
+            Error::JobRunning { table, job } => write!(
+                f,
+                "table {table}: migration job {job} is running; finish it with run_job or \
+                 cancel it"
+            ),
+            Error::NothingToRevert { table } => write!(f, "table {table}: nothing to revert"),
+            Error::RevertStale { table, detail } => {
+                write!(f, "table {table}: cannot revert: {detail}")
+            }
+            Error::NotDropped { table } => write!(f, "table {table} is not dropped"),
+            Error::FixedColumn {
+                table,
+                column,
+                clause,
+            } => write!(
+                f,
+                "table {table}: column {column} is in {clause}; engine, KEY and VERSION are \
+                 fixed for a table's life — copy to a new table instead (SPEC §19)"
+            ),
+            Error::ColumnInTombstone {
+                table,
+                column,
+                seq,
+            } => write!(
+                f,
+                "table {table}: column {column} is named by the tombstone at seq {seq}"
+            ),
+            Error::ColumnUsedByRollup {
+                table,
+                column,
+                rollup,
+            } => write!(
+                f,
+                "table {table}: column {column} is used by rollup {rollup}"
+            ),
+            Error::MigrationNotBuilt { table, kind } => {
+                write!(f, "table {table}: {kind} is not built yet")
+            }
         }
     }
 }
@@ -172,5 +254,100 @@ mod tests {
         assert!(msg.contains("KEY (id)"));
         assert!(msg.contains("ORDER BY (ts, id)"));
         assert!(msg.contains("try ORDER BY (id, ts)"));
+    }
+
+    #[test]
+    fn no_such_job_names_the_id() {
+        let msg = Error::NoSuchJob { job: 7 }.to_string();
+        assert!(msg.contains('7'));
+    }
+
+    #[test]
+    fn job_running_names_table_and_job_and_how_to_resolve_it() {
+        let msg = Error::JobRunning {
+            table: "d.t".to_string(),
+            job: 3,
+        }
+        .to_string();
+        assert!(msg.contains("d.t"));
+        assert!(msg.contains('3'));
+        assert!(msg.contains("run_job"));
+        assert!(msg.contains("cancel"));
+    }
+
+    #[test]
+    fn nothing_to_revert_names_the_table() {
+        let msg = Error::NothingToRevert {
+            table: "d.t".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("d.t"));
+    }
+
+    #[test]
+    fn revert_stale_carries_the_detail() {
+        let msg = Error::RevertStale {
+            table: "d.t".to_string(),
+            detail: "segment 9 was compacted or removed since the swap".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("d.t"));
+        assert!(msg.contains("segment 9"));
+    }
+
+    #[test]
+    fn not_dropped_names_the_table() {
+        let msg = Error::NotDropped {
+            table: "d.t".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("d.t"));
+    }
+
+    #[test]
+    fn fixed_column_names_the_clause_and_suggests_a_new_table() {
+        let msg = Error::FixedColumn {
+            table: "d.t".to_string(),
+            column: "id".to_string(),
+            clause: "KEY".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("id"));
+        assert!(msg.contains("KEY"));
+        assert!(msg.contains("copy to a new table"));
+    }
+
+    #[test]
+    fn column_in_tombstone_names_the_seq() {
+        let msg = Error::ColumnInTombstone {
+            table: "d.t".to_string(),
+            column: "a".to_string(),
+            seq: 4,
+        }
+        .to_string();
+        assert!(msg.contains('a'));
+        assert!(msg.contains('4'));
+    }
+
+    #[test]
+    fn column_used_by_rollup_names_it() {
+        let msg = Error::ColumnUsedByRollup {
+            table: "d.t".to_string(),
+            column: "a".to_string(),
+            rollup: "r1".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains('a'));
+        assert!(msg.contains("r1"));
+    }
+
+    #[test]
+    fn migration_not_built_names_the_kind() {
+        let msg = Error::MigrationNotBuilt {
+            table: "d.t".to_string(),
+            kind: "PARTITION BY".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("PARTITION BY"));
     }
 }

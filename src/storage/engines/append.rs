@@ -202,6 +202,7 @@ mod tests {
             side_files: Vec::new(),
             dir: "d/0000000000000001".to_string(),
             field_ids: vec![FieldId(1)],
+            file_field_ids: Vec::new(),
         }
     }
 

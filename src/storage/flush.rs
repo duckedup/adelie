@@ -144,6 +144,7 @@ pub(crate) fn run(
                 side_files: Vec::new(),
                 dir: dir.clone(),
                 field_ids: field_ids.clone(),
+                file_field_ids: Vec::new(),
             };
             let path = Manifest::segment_path(&shared.root, &seg);
             let file = shared

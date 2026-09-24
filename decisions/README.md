@@ -17,3 +17,4 @@ rule, why it exists, and the evidence.
 | [D0010](0010-fix-bugs-in-the-pr-that-finds-them.md) | Fix a bug in the PR that finds it; defer only a design change or a maintainer's call |
 | [D0011](0011-ledger-and-transactions-across-engines.md) | `ledger` is an engine in adelie; transactions span every engine |
 | [D0012](0012-stable-ids-and-rebuild-and-swap-migrations.md) | Stable table/field ids; engine, `KEY`, `VERSION` fixed; every migration is rebuild and swap |
+| [D0013](0013-migrations-as-built.md) | A migration builds a new table id and swaps it in by name; segment entries are views of shared files; the library API comes first |

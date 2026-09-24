@@ -11,6 +11,7 @@ mod gc;
 mod io;
 mod lock;
 pub mod manifest;
+mod migrate;
 mod read;
 pub mod segment;
 
@@ -25,14 +26,15 @@ use std::time::{Duration, Instant};
 use crate::exec::{Batch, Field};
 use crate::storage::io::Io;
 use crate::storage::manifest::{
-    Commit, Edit, Predicate, Publisher, Snapshot, TableEntry, TableName,
+    Commit, Edit, Manifest, Predicate, Publisher, Snapshot, TableEntry, TableName,
 };
 
 use buffer::{FlushTicket, should_flush};
 
 pub use engines::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
 pub use error::Error;
-pub use manifest::TableSpec;
+pub use manifest::{Alter, AlterPlan, Job, RetireReason, Retired, TableSpec};
+pub use migrate::JobStatus;
 
 /// `Store::open` defaults and the compaction/GC policy (SPEC §6, §18).
 #[derive(Debug, Clone)]
@@ -44,6 +46,12 @@ pub struct StoreOptions {
     pub gc_grace: Duration,
     pub compact_min_inputs: usize,
     pub compact_small_rows: u64,
+    /// How long a swapped-out, reverted-away or dropped table is kept (SPEC §19: 24 hours).
+    pub retain_definitions: Duration,
+    /// Source segments one `run_job` step carries at most.
+    pub job_step_segments: usize,
+    /// A job swaps once at most this many source segments remain uncarried (SPEC §19 step 3).
+    pub job_swap_gap: usize,
 }
 
 impl Default for StoreOptions {
@@ -56,6 +64,9 @@ impl Default for StoreOptions {
             gc_grace: Duration::from_secs(5 * 60),
             compact_min_inputs: 4,
             compact_small_rows: 262_144,
+            retain_definitions: Duration::from_secs(24 * 60 * 60),
+            job_step_segments: 16,
+            job_swap_gap: 4,
         }
     }
 }
@@ -116,6 +127,30 @@ impl Shared {
             state.in_flight.remove(t);
         }
         Ok(version)
+    }
+
+    /// Like `commit`, but holds `state` through the publish so no batch enters or leaves the
+    /// buffer meanwhile; `plan` returns edits or `None` to back off, and `after` then runs on
+    /// `state`. Lock order is commit-then-state, as in `commit`; delays writers one fsync.
+    fn commit_holding_state(
+        &self,
+        plan: impl FnOnce(&Manifest, &State, u64) -> Result<Option<Vec<Edit>>, Error>,
+        after: impl FnOnce(&mut State),
+    ) -> Result<Option<u64>, Error> {
+        let _guard = self.commit.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        let base = state.current.version();
+        let manifest = state.current.manifest().clone();
+        let edits = match plan(&manifest, &state, base + 1)? {
+            Some(edits) => edits,
+            None => return Ok(None),
+        };
+        let next = Commit { base, edits }.apply(&manifest, now_ms())?;
+        self.publisher.publish(&next)?;
+        let version = next.version;
+        state.current = Arc::new(Snapshot::new(self.root.clone(), next));
+        after(&mut state);
+        Ok(Some(version))
     }
 }
 
@@ -316,8 +351,21 @@ impl Store {
     }
 
     /// Merges every plan the table's engine proposes into one commit. `None` if it proposed
-    /// none.
+    /// none, or a migration job is running on the table: a running job owns the source's
+    /// segment set (`job.handled` tracks it), so compaction would invalidate that bookkeeping.
     pub fn compact(&self, table: &TableName) -> Result<Option<u64>, Error> {
+        if self
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .current
+            .manifest()
+            .job_for(table)
+            .is_some()
+        {
+            return Ok(None);
+        }
         match compact::prepare(&self.shared, table)? {
             Some(prepared) => {
                 crate::storage::fail::point("compact.pre_publish");
@@ -332,6 +380,171 @@ impl Store {
 
     pub fn gc(&self) -> Result<usize, Error> {
         gc::run(&self.shared)
+    }
+
+    /// The current definition of `table`, if it is live (dropped and retired tables are not).
+    pub fn table(&self, name: &TableName) -> Option<TableEntry> {
+        self.shared
+            .state
+            .lock()
+            .unwrap()
+            .current
+            .manifest()
+            .table(name)
+            .cloned()
+    }
+
+    /// What `ops` would do to `table`, without touching any segment (SPEC §19 `EXPLAIN`).
+    pub fn explain_alter(&self, table: &TableName, ops: &[Alter]) -> Result<AlterPlan, Error> {
+        let manifest = self.shared.state.lock().unwrap().current.manifest().clone();
+        let entry = manifest
+            .table(table)
+            .ok_or_else(|| Error::UnknownTable(table.to_string()))?;
+        let target = manifest::plan_alter(entry, ops)?;
+        Ok(manifest::explain(entry, &target))
+    }
+
+    /// Starts a migration job; returns its id. Nothing is rewritten until `run_job`.
+    pub fn alter(&self, table: &TableName, ops: Vec<Alter>) -> Result<u64, Error> {
+        let t = table.clone();
+        self.shared
+            .commit(move |_v| vec![Edit::CreateJob { table: t, ops }], &[])?;
+        Ok(self.shared.state.lock().unwrap().current.manifest().next_job_id - 1)
+    }
+
+    /// One bounded step of `job` (SPEC §19 step 2/3): catches up more source segments, or —
+    /// once the remaining gap is small — flushes and swaps the target in.
+    pub fn run_job(&self, job: u64) -> Result<JobStatus, Error> {
+        migrate::step(self, job)
+    }
+
+    /// `alter`, then `run_job` until it swaps: the whole migration, returning the swap version.
+    pub fn migrate(&self, table: &TableName, ops: Vec<Alter>) -> Result<u64, Error> {
+        let job = self.alter(table, ops)?;
+        loop {
+            if let JobStatus::Swapped { version } = self.run_job(job)? {
+                return Ok(version);
+            }
+        }
+    }
+
+    /// Every job currently running, ascending by id.
+    pub fn jobs(&self) -> Vec<Job> {
+        self.shared
+            .state
+            .lock()
+            .unwrap()
+            .current
+            .manifest()
+            .jobs
+            .clone()
+    }
+
+    /// Drops `job`; its rewritten files go to garbage, reused ones stay with the source.
+    pub fn cancel_job(&self, job: u64) -> Result<u64, Error> {
+        self.shared.commit(move |_v| vec![Edit::CancelJob { job }], &[])
+    }
+
+    /// Restores the definition a migration's swap retired, plus every write since (SPEC §19
+    /// REVERT). Backs off while a flush still holds old-schema batches for the table; up to 64
+    /// attempts, then `Error::Usage`.
+    pub fn revert_table(&self, table: &TableName) -> Result<u64, Error> {
+        let name = table.clone();
+        for _ in 0..64 {
+            self.flush()?;
+            type Schemas = (Vec<manifest::SchemaField>, Vec<manifest::SchemaField>);
+            let restore: std::cell::RefCell<Option<Schemas>> = std::cell::RefCell::new(None);
+            let result = self.shared.commit_holding_state(
+                |manifest, state, _next| {
+                    let current = manifest
+                        .table(&name)
+                        .ok_or_else(|| Error::Manifest(manifest::Error::NothingToRevert {
+                            table: name.to_string(),
+                        }))?;
+                    let retired = manifest
+                        .retired
+                        .iter()
+                        .rev()
+                        .find(|r| {
+                            r.reason == manifest::RetireReason::Swapped && r.entry.name == name
+                        })
+                        .ok_or_else(|| Error::Manifest(manifest::Error::NothingToRevert {
+                            table: name.to_string(),
+                        }))?;
+                    if state.in_flight.contains_key(&name) {
+                        return Ok(None);
+                    }
+                    *restore.borrow_mut() = Some((current.schema.clone(), retired.entry.schema.clone()));
+                    crate::storage::fail::point("revert.pre_publish");
+                    Ok(Some(vec![Edit::RevertTable { table: name.clone() }]))
+                },
+                |state| {
+                    let Some((from, to)) = restore.borrow_mut().take() else {
+                        return;
+                    };
+                    if let Some(batches) = state.pending.get_mut(&name) {
+                        for b in batches.iter_mut() {
+                            let projected = read::project_batch(b, &from, &to).unwrap_or_else(|e| {
+                                panic!("table {name}: buffered batch failed to project onto the reverted schema: {e}")
+                            });
+                            *b = Arc::new(projected);
+                        }
+                    }
+                },
+            )?;
+            if let Some(version) = result {
+                return Ok(version);
+            }
+        }
+        Err(Error::Usage(format!("table {name} is busy; retry")))
+    }
+
+    /// Drops `table`, keeping its definition for `retain_definitions` (`undrop_table`). Backs
+    /// off while a flush still holds batches for it; up to 64 attempts, then `Error::Usage`.
+    pub fn drop_table(&self, table: &TableName) -> Result<u64, Error> {
+        let name = table.clone();
+        for _ in 0..64 {
+            self.flush()?;
+            let result = self.shared.commit_holding_state(
+                |_manifest, state, _next| {
+                    if state.in_flight.contains_key(&name) {
+                        return Ok(None);
+                    }
+                    Ok(Some(vec![Edit::DropTable { table: name.clone() }]))
+                },
+                |state| {
+                    // Rows buffered before the drop go with the table, not with whatever
+                    // reuses its name next.
+                    if let Some(batches) = state.pending.remove(&name) {
+                        for b in &batches {
+                            state.pending_rows = state.pending_rows.saturating_sub(b.rows());
+                            state.pending_bytes =
+                                state.pending_bytes.saturating_sub(b.byte_size());
+                        }
+                    }
+                },
+            )?;
+            if let Some(version) = result {
+                return Ok(version);
+            }
+        }
+        Err(Error::Usage(format!("table {name} is busy; retry")))
+    }
+
+    /// Brings a dropped table's definition and segments back.
+    pub fn undrop_table(&self, table: &TableName) -> Result<u64, Error> {
+        let t = table.clone();
+        self.shared
+            .commit(move |_v| vec![Edit::UndropTable { table: t }], &[])
+    }
+
+    /// Every segment goes to garbage and every tombstone goes; the table's id and field ids
+    /// are kept.
+    pub fn truncate_table(&self, table: &TableName) -> Result<u64, Error> {
+        self.flush()?;
+        let t = table.clone();
+        self.shared
+            .commit(move |_v| vec![Edit::TruncateTable { table: t }], &[])
     }
 
     pub fn snapshot(&self) -> View {
@@ -675,6 +888,9 @@ mod tests {
             next_table_id: 2,
             tables: vec![entry],
             garbage: vec![],
+            next_job_id: 1,
+            jobs: vec![],
+            retired: vec![],
         };
         Publisher::new(dir.clone(), Io::real(), 8)
             .publish(&m)
@@ -854,6 +1070,46 @@ mod tests {
             })
             .collect();
         assert_eq!(rows, vec![1, 2, 3]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn compact_is_a_no_op_while_a_migration_job_runs_on_the_table() {
+        let dir = temp_dir("compact-vs-job");
+        let opts = StoreOptions {
+            compact_min_inputs: 1,
+            compact_small_rows: 100,
+            job_swap_gap: 0,
+            ..StoreOptions::default()
+        };
+        let store = open(&dir, opts);
+        store.write(&table(), batch(1, 1)).unwrap();
+        store.write(&table(), batch(2, 1)).unwrap();
+
+        // `job_swap_gap: 0` keeps this job `Running` (2 segments, above the gap) instead of
+        // swapping immediately, so it stays on the table while `compact` is called.
+        let job = store
+            .alter(
+                &table(),
+                vec![crate::storage::manifest::Alter::AddColumn(Field {
+                    name: "c".to_string(),
+                    ty: DataType::UInt64,
+                })],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.run_job(job).unwrap(),
+            JobStatus::Running { .. }
+        ));
+
+        let before = store.snapshot().table(&table()).unwrap().segments.len();
+        assert_eq!(store.compact(&table()).unwrap(), None);
+        assert_eq!(
+            store.snapshot().table(&table()).unwrap().segments.len(),
+            before,
+            "compact must not touch a table a job is migrating"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

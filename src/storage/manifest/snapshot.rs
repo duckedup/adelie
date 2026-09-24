@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Manifest, TableName};
+use super::Manifest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
@@ -28,21 +28,20 @@ impl Snapshot {
         &self.root
     }
 
-    /// Whether segment `id` of `table` is still live in this snapshot's manifest.
-    pub fn names_segment(&self, table: &TableName, id: u64) -> bool {
-        self.manifest
-            .table(table)
-            .is_some_and(|t| t.segments.iter().any(|s| s.id == id))
+    /// Whether segment `id` is referenced anywhere in this snapshot (a live table, a retired
+    /// entry or a job target): the D0012 reference count GC checks across tables.
+    pub fn references_segment(&self, id: u64) -> bool {
+        self.manifest.references_segment(id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::manifest::{Commit, Edit, TableSpec};
+    use crate::storage::manifest::{Commit, Edit, TableName, TableSpec};
 
     #[test]
-    fn names_segment_reflects_the_wrapped_manifest() {
+    fn references_segment_and_accessors_reflect_the_wrapped_manifest() {
         let table = TableName::new("d", "t");
         let empty = Manifest::empty();
         let with_table = Commit {
@@ -55,7 +54,7 @@ mod tests {
         .unwrap();
 
         let snap = Snapshot::new(PathBuf::from("/root"), with_table);
-        assert!(!snap.names_segment(&table, 1));
+        assert!(!snap.references_segment(1));
         assert_eq!(snap.root(), Path::new("/root"));
         assert_eq!(snap.version(), 1);
     }
