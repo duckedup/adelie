@@ -76,14 +76,15 @@ implementation detail.
   people and agents through the same SQL.
 - Built-in MCP so an agent can explore and analyse data safely, locally and at scale.
 - One architecture from a laptop to a cluster: scale is a quantity, not a mode.
+- Multi-statement transactions across any tables, and `UPDATE` on `ledger` tables (§18, D0011).
 
 **Non-goals** (each is a design change to revisit, not a deferral)
 
 | Non-goal | Why |
 |---|---|
 | Object storage (S3, GCS) as primary storage | Local disk is the source of truth; object storage constrains the architecture |
-| A write-ahead log | A write is acknowledged only once its segment is durable (§6). The proposed `ledger` engine is the one exception (§18) |
-| Transactions, `UPDATE`, OLTP point workloads | Analytics store; writes are appends and predicate deletes. The proposed `ledger` engine is the one exception (§18) |
+| A write-ahead log | A write is acknowledged only once its segment is durable (§6). The `ledger` engine is the one exception (§18, D0011) |
+| `UPDATE` and OLTP point workloads outside `ledger` | Other engines' writes are appends and predicate deletes; `ledger` is the row store (§18, D0011) |
 | Arrow / DataFusion / Parquet in the core | Build cost; adelie owns its format and engine. Parquet import/export may ship as a feature |
 | Async compute | Operators are CPU-bound; async is for IO only (§1) |
 | A cost-based optimizer | Rule-based planning over good statistics first (§8) |
@@ -98,7 +99,12 @@ implementation detail.
 - Every column is nullable. Absent and `NULL` read the same in SQL.
 - A table has a **sort key** (the order rows are written within a segment) and an optional
   **partition key** (a time bucket for time-series tables). Both are declared at creation and
-  fixed for the table's life.
+  changed only by a migration (§19).
+- A table has an **engine** (§18), and for keyed engines a `KEY` and optional `VERSION`. These
+  decide what happens to rows, so they are fixed for the table's life. No migration changes them.
+- Tables and columns have **stable ids**, assigned once and never reused. Names are labels:
+  renaming is instant, and a column dropped and re-added under the same name is a new column
+  whose data never mixes with the old one's (D0012).
 
 **Types (v1)**
 
@@ -115,6 +121,7 @@ implementation detail.
 | `UUID` | 16 bytes; sorts bytewise, which matches canonical text order |
 | `IP` | IPv4 or IPv6 in 16 bytes (IPv4 stored IPv4-mapped, shown dotted-quad), with CIDR containment |
 | `LIST<T>` | homogeneous list of a non-list type |
+| `VECTOR(n[, elem])` | fixed-length vector of `n` elements; `elem` is `FLOAT32` (the default), with `FLOAT16`, `INT8`, and `BIT` added under the type-id-plus-parameters rule (§5) |
 
 There is no `ENUM` type (low-cardinality strings are dictionary-encoded automatically) and no
 `MAP` or `JSON` type (dynamic columns are the map, §16.3). `STRUCT` is deferred. Representation
@@ -199,11 +206,12 @@ A store directory:
   manifest            current manifest (atomic rename target)
   manifest.<version>  retained prior manifests (bounded)
   lock                writer-exclusion lock
-  <db>/<table>/
+  <db>/<table-id>/   a table's directory is keyed by its stable id, never its name (D0012)
     <partition>/
       <segment-id>.seg   immutable segment files
       <segment-id>.idx   optional derived indexes (bloom, full-text); rebuildable, bound
                          to its segment by the segment's footer CRC
+    wal/               `ledger` tables only: the engine's write-ahead log (§18)
 ```
 
 **Segment.** An immutable file of up to ~1M rows, split into **row groups** of ~64k rows (the
@@ -236,11 +244,18 @@ unit of pruning and of parallel work).
   adaptive (§16.2).
 
 **Manifest.** The one mutable object: the live segment set per table, each segment's partition,
-row count, column summary, commit sequence, and side files (derived per-segment state such
-as a deletion vector, which a reader must not ignore), each table's schema, engine, and
-recorded tombstones, a garbage list of segments awaiting deletion, and a monotonic version. It is
-CRC-checked and published by write-to-temp, fsync, rename, fsync-directory. Publishing a
-manifest is the commit point for every change. Its format is D0009.
+directory, row count, column summary, commit sequence, the field id of each of its columns,
+and side files (derived per-segment state such as a deletion vector, which a reader must not
+ignore). Per table: its id, name, schema (field id, name, type), engine, `KEY`, `VERSION`, sort
+and partition keys, TTL, and recorded tombstones. Store-wide: a garbage list of segments
+awaiting deletion, running jobs (§19), and a monotonic version. It is CRC-checked and published
+by write-to-temp, fsync, rename, fsync-directory. Publishing a manifest is the commit point for
+every change. Its format is D0009; ids are D0012.
+
+A segment is referenced by the directory the manifest records for it, not by a path derived from
+its table. A migration therefore reuses a segment without moving it, and several tables (a
+swapped table and the one kept for `REVERT`) may reference one file; GC deletes a file only when
+no table references it (§19).
 
 **Format rule.** On-disk formats are additive only. A new encoding or manifest field must not
 change how existing bytes are read. A version bump is one-way and recorded in a decision.
@@ -282,6 +297,19 @@ can fail with a snapshot-expired error, and the reader refreshes (D0009).
 **Concurrency.** One writer process per store (the `lock` file). Any number of reader processes
 open a manifest snapshot and read without locks. A reader refreshes by re-reading the manifest.
 
+**Transactions.** `BEGIN … COMMIT` spans any tables, of any engine (D0011). A transaction has one
+commit point, so it is all or nothing across every table it touched.
+
+- Writes to non-`ledger` tables stay in the transaction's buffer, visible only to it, until
+  `COMMIT` publishes them in one manifest commit. `ROLLBACK` discards the buffer.
+- `ledger` rows go through the engine's WAL. A transaction that touches only `ledger` tables
+  commits at its WAL commit record. One that also touches other tables commits at the
+  manifest publish, which records the WAL position it includes, so recovery replays exactly the
+  committed transactions (Q15).
+- Conflicts are the core's per-table check (§18). A losing transaction fails at `COMMIT` and
+  the caller retries.
+- Readers see a transaction all at once or not at all.
+
 ---
 
 ## 7. Query execution
@@ -318,17 +346,23 @@ dependency.
 |---|---|
 | `SELECT` | `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT`, `WITH` (CTEs), `UNION ALL`, subqueries in `FROM` |
 | Joins | `INNER` and `LEFT` equi-joins |
-| `CREATE TABLE` / `DROP TABLE` | fixed or dynamic, with sort and partition keys |
+| `CREATE TABLE` / `DROP TABLE` / `UNDROP TABLE` | fixed or dynamic; `ENGINE`, `KEY`, `VERSION`, `ORDER BY`, `PARTITION BY`, `TTL`, `WITH` (§19). `AS SELECT` and `LIKE` |
+| `ALTER TABLE` | a migration (§19): columns, sort and partition keys, `REVERT`; `SET` for settings. Never the engine, `KEY`, or `VERSION` |
+| `SHOW CREATE TABLE` | the full statement, defaults included |
+| `BEGIN` / `COMMIT` / `ROLLBACK` | across any tables (§6) |
+| `UPDATE ... WHERE` | `ledger` tables only (§18) |
 | `INSERT ... VALUES` / `INSERT ... SELECT` | durable when it returns (§6) |
 | `COPY t FROM '<path>'` | CSV and NDJSON |
 | `DELETE ... WHERE` | tombstone predicate (§6) |
-| `EXPLAIN` | the plan, with pruning estimates |
+| `EXPLAIN` | the plan, with pruning estimates; `EXPLAIN ALTER` shows a migration's cost first |
+| `CANCEL JOB`, `TRUNCATE`, `BACKUP TO '<dir>'`, `COPY t TO` | lifecycle (§19) |
 | `CREATE ROLLUP` / `DROP ROLLUP` | pre-aggregation maintained by the store (§16.1) |
 | Window functions | `OVER (PARTITION BY … ORDER BY … ROWS/RANGE …)`: `row_number`, `rank`, `lag`, `lead`, running aggregates |
 | Table functions | `elucidate()`, `profile()`, `patterns()` (§17), files in place (§16.4) |
 
 adelie's own SQL ergonomics (files in place, `LIMIT n PER`, `FILL`, `NEAREST JOIN`, path
-wildcards) are in §16.4. Excluded in v1: `UPDATE`, transactions, correlated subqueries.
+wildcards) are in §16.4. Reads take `AT VERSION n` to read a retained manifest (§19).
+Excluded in v1: correlated subqueries.
 Deferred: scalar subqueries, non-equi joins other than `NEAREST JOIN`.
 
 **Functions (v1).** Arithmetic, comparison, boolean, `CASE`, `CAST`, string basics
@@ -468,9 +502,12 @@ it must not break the default build budget.
 src/
   lib.rs        public API (Store, Table, sql), #![deny(unsafe_code)]
   types/        type system, values, casts
-  segment/      segment writer and reader, encodings, CRC framing, skip structures
-  manifest/     manifest codec, publish, snapshots, retention
-  store/        tables, write buffer, flush, compaction, deletes, rollups, lock
+  storage/      the store: tables, commits and transactions, snapshots, write buffer, flush,
+                migrations and jobs, compaction, GC, retention, lock, file IO
+    segment/    segment writer and reader, encodings, CRC framing, skip structures
+    manifest/   manifest codec, publish, ids
+    engines/    the Engine trait (§18), and one module each: append, latest, rollup,
+                vector, ledger (row store and WAL)
   exec/         batches, kernels, operators, morsel scheduler, memory budget
   sql/          lexer, parser, binder, planner
   fts/          tokeniser, inverted index, BM25
@@ -499,8 +536,9 @@ src/
 | Q10 | Log patterns for multi-line logs (stack traces): one pattern per entry, or per first line? |
 | Q11 | Adaptive skip structures: what query-log evidence builds one, and what drops it (§16.2)? |
 | Q12 | ~~Table engines (§18): where exactly is the engine trait boundary, and must it be settled before the segment format (§5) ships?~~ Answered (§18): the format ships first with three hooks; the boundary is fixed with the store (E4). |
-| Q13 | `latest`: is "newest" the commit sequence, a declared version column, or both? |
-| Q14 | `ledger`: its own crate and product, or an engine inside adelie? |
+| Q13 | ~~`latest`: is "newest" the commit sequence, a declared version column, or both?~~ Answered (§18): both. `VERSION (col)` is optional and fixed at creation; without it, the commit sequence. |
+| Q14 | ~~`ledger`: its own crate and product, or an engine inside adelie?~~ Answered (D0011): an engine inside adelie, and transactions span every engine. |
+| Q15 | The `ledger` commit protocol: how a WAL commit record and a manifest publish share one commit point for a transaction that touches both, and how recovery replays exactly the committed ones (§6). |
 
 ---
 
@@ -662,7 +700,8 @@ guardrails (§11), not a separate feature set.
 
 A table's **engine** decides its layout and what compaction does to its rows. adelie, nidus,
 and a transactional store share one core and differ only in engines. Tracked by `adelie-goi`.
-The boundary and `append` are built (E4, D0009); the other engines are proposed.
+The boundary and `append` are built (E4, D0009); `latest`, `rollup`, `vector`, and `ledger` are
+specified here and not yet built.
 
 **The split.** Modelled on PostgreSQL's table access methods, not MySQL's storage engines.
 
@@ -683,15 +722,51 @@ change without a rename.
 | Engine | Rows | Merge policy |
 |---|---|---|
 | `append` | every row kept | none; compaction only re-sorts and applies tombstones. The default, and adelie today |
-| `latest` | newest row per key | keeps the row with the highest commit sequence (or a declared version column) per key |
+| `latest` | newest row per key | keeps the row with the highest `VERSION` value per key, or the highest commit sequence when the table declares no `VERSION` |
 | `rollup` | one row per key | folds mergeable aggregate states (§8); what `CREATE ROLLUP` (§16.1) is built on |
 | `vector` | every row kept | maintains a nearest-neighbour index over an embedding column (nidus) |
-| `ledger` | rows updated in place | row-oriented, with a write-ahead log; `UPDATE` and multi-statement transactions |
+| `ledger` | rows updated in place | row-oriented, with a write-ahead log; `UPDATE` and point reads and writes (D0011) |
+
+**Choosing an engine.** A user picks what happens to rows, never a layout. The engine is one
+clause of `CREATE TABLE`, and the other clauses keep one meaning whatever it is:
+
+```sql
+CREATE TABLE [IF NOT EXISTS] db.name ( col TYPE, ... | DYNAMIC )
+  [ENGINE = append | latest | rollup | vector | ledger]    -- default: append
+  [KEY (cols)] [VERSION (col)]                             -- keyed engines only
+  [ORDER BY (cols)] [PARTITION BY time_bucket('1d', ts)]
+  [TTL ts + INTERVAL '30 days'] [WITH (engine options)]
+```
+
+| Engine | Pick it for | A query sees | `KEY` | Engine-specific syntax |
+|---|---|---|---|---|
+| `append` | logs, spans, events, raw metrics | every row | not allowed | none |
+| `latest` | users, device state, config | the newest row per key | required | `VERSION (col)`, optional |
+| `rollup` | counters, running totals | one folded row per key | required | per column: `hits UINT64 AGGREGATE sum` |
+| `vector` | embeddings | every row, plus nearest-neighbour search | not allowed | a `VECTOR(n)` column; `WITH (metric = cosine)` |
+| `ledger` | balances, orders, anything updated in place | the current row per key | required | `UPDATE`; point reads and writes |
 
 ```sql
 CREATE TABLE users (id UINT64, email STRING, seen TIMESTAMP)
-  ENGINE = latest KEY (id);
+  ENGINE = latest KEY (id) VERSION (seen);
 ```
+
+- **Defaults.** With every clause omitted, a table is `append`, fixed, and has no sort key. For
+  a keyed engine, `ORDER BY` defaults to `KEY`. OTel tables come from a built-in preset.
+- **Fixed for the table's life:** the engine, `KEY`, and `VERSION`, because they decide which
+  rows survive. Changing one is a new table, `CREATE TABLE … AS SELECT` (§19), never an
+  `ALTER`, since `append` → `latest` discards history and `latest` → `append` cannot restore it.
+- **Errors teach.** `KEY` on `append` names `latest`. `PRIMARY KEY` is rejected with a pointer
+  to `ENGINE = latest KEY (…)`, because `latest` never rejects a duplicate, and `PRIMARY KEY`
+  would promise a check that does not exist. `ALTER TABLE … SET ENGINE` shows the
+  `CREATE TABLE … AS SELECT` to run instead.
+- **Visible afterwards.** `SHOW CREATE TABLE` prints every clause, defaults included;
+  `adelie.tables` lists them; `EXPLAIN` names the engine's read-time work ("latest: merging 12
+  unmerged segments by key").
+- **One surface.** SQL is canonical. The library's `TableSpec` has one method per clause, and the
+  CLI and MCP take the same SQL and return the same errors.
+- `CREATE ROLLUP` (§16.1) creates a `rollup` table that the store keeps in step with its base
+  table; `ENGINE = rollup` is for tables whose inserts are already aggregate inputs.
 
 **Rules.**
 
@@ -711,15 +786,15 @@ afterwards without a format version bump.
 
 1. **Extensible column types.** A footer column descriptor is a logical type id plus
    parameters, not a closed enum. A reader that meets an unknown type fails with an error
-   naming it; it never guesses. This is how `rollup`'s aggregate states and `vector`'s
-   `FLOAT32` vectors get stored.
+   naming it; it never guesses. This is how `rollup`'s aggregate states and `VECTOR(n, elem)`
+   values get stored.
 2. **A generic index directory.** Each derived index (bloom, set, n-gram, full-text, and a
    nearest-neighbour index) is an entry of kind, columns, byte range, and CRC, in the footer
    or the `.idx` file. Readers skip kinds they do not know.
 3. **Segments stay engine-agnostic.** Per-segment commit sequence, the table's engine, and
    `ledger`'s deletion vectors live in the manifest and its side files, never in a segment.
    `latest` needs no per-row version: one flush is one commit, and duplicates of a key within
-   a flush are resolved at flush time.
+   a flush are resolved at flush time. A declared `VERSION` is an ordinary column.
 
 **The engine boundary is fixed with the store** (E4, D0009). An engine supplies: flush
 (buffered rows to segments), its merge policy (which live segments to compact together), merge
@@ -732,10 +807,69 @@ table that exists, so appends never conflict.
 
 **Consequences, stated plainly.**
 
-- `ledger` reverses two non-goals in §2 (a WAL; transactions and `UPDATE`) for one engine.
-  Accepting it is a design change: a decision record first.
-- `vector` needs a fixed-length `FLOAT32` vector type, which §3 does not have yet.
+- `ledger` reverses two former non-goals of §2, a WAL and `UPDATE`, for one engine, and
+  transactions now span every engine (§6). Both are accepted in D0011.
+- `vector` needs `VECTOR(n, elem)` (§3).
 - Optimistic multi-table commits relax §6's one-writer-per-store rule only within the writer
   process. Several writer processes remain out of scope.
 
-Open questions Q13–Q14.
+Open question Q15.
+
+---
+
+## 19. Table lifecycle and migrations
+
+A table changes shape in one way: a **migration**, which rebuilds the table and swaps it in
+atomically (D0012). A setting that does not change the layout is not a migration.
+
+| Kind | Statements | Mechanism |
+|---|---|---|
+| Fixed | engine, `KEY`, `VERSION` | never changed; a new table via `CREATE TABLE … AS SELECT` |
+| Migration | `ADD`/`DROP`/`RENAME COLUMN`, widening a column type (§3's `coerce`), `ORDER BY` (keeping `KEY` its prefix), `PARTITION BY`, dynamic → fixed | rebuild and swap |
+| Setting | `TTL`, `WITH` options that do not change the layout, `RENAME TABLE` | `ALTER … SET`: one manifest commit |
+
+**Rebuild and swap.**
+
+1. A migration runs as a **job**. It builds the new table from a snapshot at version V,
+   **reusing every segment already valid under the new definition** and rewriting the rest. A
+   segment is valid when its columns map onto the new schema by field id: `ADD COLUMN` and
+   `DROP COLUMN` reuse every segment (an absent column reads `NULL`; a dropped one is not read,
+   and compaction later reclaims its bytes), while `ORDER BY` and `PARTITION BY` rewrite all.
+2. It then catches up on the segments and tombstones committed after V. Appends never
+   conflict, so writers never pause.
+3. When the remaining gap is small, one commit swaps the new definition in, with dependent
+   rollups (§16.1).
+4. The old definition is kept for a grace period (default 24 hours). `ALTER TABLE t REVERT`
+   swaps it back, and costs nothing because the two share their reused files.
+
+Readers keep their snapshot throughout, and never block or see a half-built table.
+
+```sql
+EXPLAIN ALTER TABLE spans ADD COLUMN region STRING;
+-- migration: rewrites 0 of 412 segments; instant
+EXPLAIN ALTER TABLE spans ORDER BY (service, start_time);
+-- migration: rewrites 412 of 412 segments (84 GB, ~9 min); rollups spans_1m rebuilt too
+```
+
+- **Jobs** are resumable after a crash and cancellable (`CANCEL JOB n`), and `adelie.jobs` shows
+  each one's progress. A job's state lives in the manifest.
+- **Disk.** A migration temporarily needs space for the segments it rewrites.
+- **Guardrails.** Dropping or retyping a column that a rollup uses fails and names the rollup.
+  A dynamic table gains columns without a migration (§3).
+- **Changing what is fixed** is a copy the user performs: `CREATE TABLE users_v2 ENGINE = latest
+  KEY (id) AS SELECT * FROM users`. The copy reads one snapshot, so the user moves writers to
+  the new table first; both tables exist until the user drops one.
+
+**Versioned migrations.** `adelie migrate <dir>` applies `0001_*.sql`, `0002_*.sql`, … in order
+and records each file's name and checksum in `adelie.migrations`. A recorded file whose
+contents changed is an error. `--dry-run` prints `EXPLAIN` for every statement. Over MCP, a
+migration runs the dry run first and applies only after approval (§11).
+
+**The rest of the lifecycle.**
+
+- `DROP TABLE` keeps the table for the grace period; `UNDROP TABLE t` restores it.
+- `TRUNCATE t` is one commit that moves every segment to garbage.
+- `BACKUP TO '<dir>'` hard-links the immutable files plus one manifest: instant and consistent.
+- `SELECT … AT VERSION n` reads a retained manifest.
+- `CREATE TABLE … LIKE t` copies a definition; `COPY t TO '<path>'` exports.
+

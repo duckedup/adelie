@@ -15,3 +15,5 @@ rule, why it exists, and the evidence.
 | [D0008](0008-segment-format-v1.md) | Segment format v1: CRC32C framing, fixed type/encoding/index ids, additive records |
 | [D0009](0009-manifest-format-v1.md) | Manifest v1: CRC32C framing, additive records, per-table OCC, temp-fsync-rename publish |
 | [D0010](0010-fix-bugs-in-the-pr-that-finds-them.md) | Fix a bug in the PR that finds it; defer only a design change or a maintainer's call |
+| [D0011](0011-ledger-and-transactions-across-engines.md) | `ledger` is an engine in adelie; transactions span every engine |
+| [D0012](0012-stable-ids-and-rebuild-and-swap-migrations.md) | Stable table/field ids; engine, `KEY`, `VERSION` fixed; every migration is rebuild and swap |
