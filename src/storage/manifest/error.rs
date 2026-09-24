@@ -180,11 +180,7 @@ impl fmt::Display for Error {
                 "table {table}: column {column} is in {clause}; engine, KEY and VERSION are \
                  fixed for a table's life — copy to a new table instead (SPEC §19)"
             ),
-            Error::ColumnInTombstone {
-                table,
-                column,
-                seq,
-            } => write!(
+            Error::ColumnInTombstone { table, column, seq } => write!(
                 f,
                 "table {table}: column {column} is named by the tombstone at seq {seq}"
             ),

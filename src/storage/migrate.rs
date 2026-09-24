@@ -15,7 +15,11 @@ use super::{Error, Shared, Store, io_err};
 /// What one `run_job` step left behind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobStatus {
-    Running { job: u64, handled: usize, total: usize },
+    Running {
+        job: u64,
+        handled: usize,
+        total: usize,
+    },
     /// The swap committed at `version`; the job no longer exists.
     Swapped { version: u64 },
 }
@@ -90,11 +94,10 @@ fn rewrite_segments(
     let mut out = Vec::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
     for &id in ids {
-        let seg = source
-            .segments
-            .iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| Error::Usage(format!("migration: source segment {id} is not live")))?;
+        let seg =
+            source.segments.iter().find(|s| s.id == id).ok_or_else(|| {
+                Error::Usage(format!("migration: source segment {id} is not live"))
+            })?;
         let batches = read::read_segment_as(&shared.root, seg, &target.schema)?;
         let outputs = engine.merge(target, vec![batches], shared.opts.max_rows)?;
 
@@ -199,7 +202,8 @@ pub(crate) fn step(store: &Store, id: u64) -> Result<JobStatus, Error> {
         store.flush()?;
         let loaded = load_job(shared, id)?;
         if loaded.rewrite && !loaded.gap.is_empty() {
-            let segments = rewrite_segments(shared, &loaded.gap, &loaded.source, &loaded.job.target)?;
+            let segments =
+                rewrite_segments(shared, &loaded.gap, &loaded.source, &loaded.job.target)?;
             crate::storage::fail::point("migrate.pre_advance");
             let rewritten = loaded.gap.clone();
             shared.commit(

@@ -15,13 +15,19 @@ use super::{FieldId, SchemaField, TableEntry, TableId, TableSpec};
 pub enum Alter {
     AddColumn(Field),
     DropColumn(String),
-    RenameColumn { from: String, to: String },
+    RenameColumn {
+        from: String,
+        to: String,
+    },
     /// Resolved as SPEC §18 does: empty on a keyed engine means KEY.
     OrderBy(Vec<String>),
     /// Refused (`MigrationNotBuilt`): flush writes every segment to partition `_` today.
     PartitionBy(Option<(String, Duration)>),
     /// Refused (`MigrationNotBuilt`): widening needs coerce-on-read, not built.
-    SetType { column: String, ty: DataType },
+    SetType {
+        column: String,
+        ty: DataType,
+    },
 }
 
 /// What a migration would do (`EXPLAIN ALTER TABLE`, SPEC §19).
@@ -133,9 +139,7 @@ pub fn plan_alter(source: &TableEntry, ops: &[Alter]) -> Result<TableEntry, Erro
                 let idx = schema
                     .iter()
                     .position(|sf| &sf.field.name == from)
-                    .ok_or_else(|| {
-                        Error::Usage(format!("table {table}: unknown column {from}"))
-                    })?;
+                    .ok_or_else(|| Error::Usage(format!("table {table}: unknown column {from}")))?;
                 if schema.iter().any(|sf| &sf.field.name == to) {
                     return Err(Error::Usage(format!(
                         "table {table}: column {to} already exists"
@@ -168,9 +172,7 @@ pub fn plan_alter(source: &TableEntry, ops: &[Alter]) -> Result<TableEntry, Erro
                 let id = schema
                     .iter()
                     .find(|sf| &sf.field.name == column)
-                    .ok_or_else(|| {
-                        Error::Usage(format!("table {table}: unknown column {column}"))
-                    })?
+                    .ok_or_else(|| Error::Usage(format!("table {table}: unknown column {column}")))?
                     .id;
                 if let Some(rollup) = rollups_using(source, id).into_iter().next() {
                     return Err(Error::ColumnUsedByRollup {
@@ -578,7 +580,9 @@ mod tests {
                 Duration::from_secs(1),
             )))],
         );
-        assert!(matches!(r, Err(Error::MigrationNotBuilt { ref kind, .. }) if kind == "PARTITION BY"));
+        assert!(
+            matches!(r, Err(Error::MigrationNotBuilt { ref kind, .. }) if kind == "PARTITION BY")
+        );
     }
 
     #[test]

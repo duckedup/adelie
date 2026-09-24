@@ -90,7 +90,10 @@ pub(crate) fn read_segment_as(
         for (i, sf) in schema.iter().enumerate() {
             fields.push(sf.field.clone());
             columns.push(match file_index[i] {
-                Some(_) => next_matched.next().expect("one column per matched field").clone(),
+                Some(_) => next_matched
+                    .next()
+                    .expect("one column per matched field")
+                    .clone(),
                 None => Column::from_values(&sf.field.ty, &vec![Value::Null; rows])
                     .map_err(|e| Error::Usage(e.to_string()))?,
             });
@@ -270,8 +273,7 @@ mod tests {
             file_fields.clone(),
             vec![
                 Column::from_values(&DataType::Int64, &[Value::Int64(10)]).unwrap(),
-                Column::from_values(&DataType::String, &[Value::String("x".to_string())])
-                    .unwrap(),
+                Column::from_values(&DataType::String, &[Value::String("x".to_string())]).unwrap(),
                 Column::from_values(&DataType::Int64, &[Value::Int64(20)]).unwrap(),
             ],
         )

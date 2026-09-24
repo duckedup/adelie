@@ -406,10 +406,20 @@ impl Store {
 
     /// Starts a migration job; returns its id. Nothing is rewritten until `run_job`.
     pub fn alter(&self, table: &TableName, ops: Vec<Alter>) -> Result<u64, Error> {
-        let t = table.clone();
-        self.shared
-            .commit(move |_v| vec![Edit::CreateJob { table: t, ops }], &[])?;
-        Ok(self.shared.state.lock().unwrap().current.manifest().next_job_id - 1)
+        // Read the id under the commit lock, from the manifest the edit applies to: a second
+        // read afterwards could see a concurrent `alter`'s job instead.
+        let id = std::cell::Cell::new(0);
+        self.shared.commit_holding_state(
+            |manifest, _state, _next| {
+                id.set(manifest.next_job_id);
+                Ok(Some(vec![Edit::CreateJob {
+                    table: table.clone(),
+                    ops,
+                }]))
+            },
+            |_state| {},
+        )?;
+        Ok(id.get())
     }
 
     /// One bounded step of `job` (SPEC §19 step 2/3): catches up more source segments, or —
@@ -442,7 +452,8 @@ impl Store {
 
     /// Drops `job`; its rewritten files go to garbage, reused ones stay with the source.
     pub fn cancel_job(&self, job: u64) -> Result<u64, Error> {
-        self.shared.commit(move |_v| vec![Edit::CancelJob { job }], &[])
+        self.shared
+            .commit(move |_v| vec![Edit::CancelJob { job }], &[])
     }
 
     /// Restores the definition a migration's swap retired, plus every write since (SPEC §19
@@ -500,29 +511,25 @@ impl Store {
     }
 
     /// Drops `table`, keeping its definition for `retain_definitions` (`undrop_table`). Backs
-    /// off while a flush still holds batches for it; up to 64 attempts, then `Error::Usage`.
+    /// off while the buffer or a flush still holds batches for it, so every acked write lands
+    /// before the drop; up to 64 attempts, then `Error::Usage`.
     pub fn drop_table(&self, table: &TableName) -> Result<u64, Error> {
         let name = table.clone();
         for _ in 0..64 {
             self.flush()?;
             let result = self.shared.commit_holding_state(
                 |_manifest, state, _next| {
-                    if state.in_flight.contains_key(&name) {
+                    // A buffered batch holds a writer waiting on its ack: flush it first rather
+                    // than drop it unacknowledged (or, worse, ack it through another table's
+                    // flush without ever writing it).
+                    if state.in_flight.contains_key(&name) || state.pending.contains_key(&name) {
                         return Ok(None);
                     }
-                    Ok(Some(vec![Edit::DropTable { table: name.clone() }]))
+                    Ok(Some(vec![Edit::DropTable {
+                        table: name.clone(),
+                    }]))
                 },
-                |state| {
-                    // Rows buffered before the drop go with the table, not with whatever
-                    // reuses its name next.
-                    if let Some(batches) = state.pending.remove(&name) {
-                        for b in &batches {
-                            state.pending_rows = state.pending_rows.saturating_sub(b.rows());
-                            state.pending_bytes =
-                                state.pending_bytes.saturating_sub(b.byte_size());
-                        }
-                    }
-                },
+                |_state| {},
             )?;
             if let Some(version) = result {
                 return Ok(version);

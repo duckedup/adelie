@@ -125,6 +125,7 @@ fn walk(dir: &Path, keep: &HashSet<u64>, io: &crate::storage::io::Io) -> Result<
 mod tests {
     use super::cleanup_orphans;
     use crate::exec::{Column, Field};
+    use crate::storage::manifest::Edit;
     use crate::storage::{Store, StoreOptions, TableSpec};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
@@ -213,7 +214,9 @@ mod tests {
             compact_min_inputs: 1,
             compact_small_rows: 100,
             gc_grace: Duration::ZERO,
-            retain_definitions: Duration::ZERO,
+            // Long enough that `compact`'s own gc cannot expire the retired entry mid-test;
+            // the test expires it explicitly below, at the point it means to.
+            retain_definitions: Duration::from_secs(3600),
             ..StoreOptions::default()
         };
         let store = Store::open(&dir, opts).unwrap();
@@ -259,6 +262,34 @@ mod tests {
         // already dropped it: exactly the reference the old table-scoped check missed.
         let view = store.snapshot();
         assert!(view.snapshot().manifest().references_segment(shared_id));
+        assert_eq!(
+            store.gc().unwrap(),
+            0,
+            "the retired entry must still protect it"
+        );
+        assert!(seg_path.exists());
+
+        // Expire the retired entry: the segment is now garbage, named only by `view`.
+        store
+            .shared
+            .commit(
+                |_v| {
+                    vec![Edit::ExpireRetired {
+                        before_ms: u64::MAX,
+                    }]
+                },
+                &[],
+            )
+            .unwrap();
+        assert!(
+            store
+                .snapshot()
+                .snapshot()
+                .manifest()
+                .garbage
+                .iter()
+                .any(|g| g.segment.id == shared_id)
+        );
 
         let removed = store.gc().unwrap();
         assert_eq!(removed, 0, "the live view must still protect it");

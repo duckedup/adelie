@@ -480,6 +480,18 @@ fn decode_segment(
         check_distinct_file_field_ids(path, &ids)?;
         ids
     };
+    // `field_ids` pairs with `columns` entry for entry (`project_onto` indexes one by the
+    // other); empty is a legacy segment, backfilled from the schema on open.
+    if !field_ids.is_empty() && field_ids.len() != columns.len() {
+        return Err(corrupt_str(
+            path,
+            &format!(
+                "segment has {} field ids for {} column stats",
+                field_ids.len(),
+                columns.len()
+            ),
+        ));
+    }
     Ok(SegmentEntry {
         id,
         partition,
@@ -1068,7 +1080,11 @@ fn encode_garbage_pre_lifecycle(m: &Manifest, out: &mut Sink) {
 /// Test-only: a `file_field_ids` list with a duplicate non-zero id — bytes a fixed decoder
 /// must reject that `encode_segment` itself can never produce.
 #[cfg(test)]
-fn encode_segment_with_bad_file_field_ids(s: &SegmentEntry, schema: &[SchemaField], out: &mut Sink) {
+fn encode_segment_with_bad_file_field_ids(
+    s: &SegmentEntry,
+    schema: &[SchemaField],
+    out: &mut Sink,
+) {
     out.uvarint(s.id);
     out.str(&s.partition);
     out.uvarint(s.seq);
@@ -1746,6 +1762,26 @@ mod tests {
         let bytes = encode_with_bad_job_id(&m);
         match decode("m", &bytes) {
             Err(Error::Corrupt { detail, .. }) => assert!(detail.contains("job id 0"), "{detail}"),
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+    }
+
+    /// `project_onto` indexes `columns` by a position found in `field_ids`: a manifest whose
+    /// two lists disagree must be rejected on decode, never panic later.
+    #[test]
+    fn field_ids_longer_than_column_stats_is_corrupt() {
+        let mut m = sample_manifest();
+        let seg = m
+            .tables
+            .iter_mut()
+            .flat_map(|t| t.segments.iter_mut())
+            .find(|s| !s.field_ids.is_empty())
+            .expect("sample has a segment with field ids");
+        seg.field_ids.push(FieldId(999));
+        match decode("m", &encode(&m)) {
+            Err(Error::Corrupt { detail, .. }) => {
+                assert!(detail.contains("field ids for"), "{detail}")
+            }
             other => panic!("expected Corrupt, got {other:?}"),
         }
     }

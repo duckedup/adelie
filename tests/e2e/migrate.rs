@@ -229,7 +229,9 @@ fn add_column_reuses_every_segment() {
     }
     assert_eq!(old_rows, 12);
 
-    store.write(&table(), extra_batch(&[(9, 0, Some("x"))])).unwrap();
+    store
+        .write(&table(), extra_batch(&[(9, 0, Some("x"))]))
+        .unwrap();
     let scanned = store.snapshot().scan(&table()).unwrap();
     let found = scanned.iter().any(|b| {
         let extra = b.column_by_name("extra").unwrap();
@@ -330,7 +332,9 @@ fn rename_keeps_segments_and_data() {
         }
     }
     got.sort_unstable();
-    let mut want: Vec<(u64, u64)> = (0..3u64).flat_map(|b| (0..4u64).map(move |i| (b, i))).collect();
+    let mut want: Vec<(u64, u64)> = (0..3u64)
+        .flat_map(|b| (0..4u64).map(move |i| (b, i)))
+        .collect();
     want.sort_unstable();
     assert_eq!(got, want);
 
@@ -394,7 +398,9 @@ fn order_by_rewrites_every_segment() {
 
     let mut got = flatten(&scanned);
     got.sort_unstable();
-    let mut want: Vec<Row> = (0..3u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want: Vec<Row> = (0..3u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want.sort_unstable();
     assert_eq!(got, want, "row multiset unchanged");
 
@@ -417,7 +423,10 @@ fn writes_during_a_job_are_caught_up() {
             vec![Alter::OrderBy(vec!["idx".to_string(), "batch".to_string()])],
         )
         .unwrap();
-    assert!(matches!(store.run_job(job).unwrap(), JobStatus::Running { .. }));
+    assert!(matches!(
+        store.run_job(job).unwrap(),
+        JobStatus::Running { .. }
+    ));
 
     for b in 3..5u64 {
         let rows: Vec<Row> = (0..4u32).map(|i| (b, i)).collect();
@@ -432,7 +441,9 @@ fn writes_during_a_job_are_caught_up() {
 
     let mut got = flatten(&store.snapshot().scan(&table()).unwrap());
     got.sort_unstable();
-    let mut want: Vec<Row> = (0..5u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want: Vec<Row> = (0..5u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want.sort_unstable();
     assert_eq!(got, want);
 
@@ -460,9 +471,18 @@ fn a_job_resumes_after_reopen_without_redoing_steps() {
             vec![Alter::OrderBy(vec!["idx".to_string(), "batch".to_string()])],
         )
         .unwrap();
-    assert!(matches!(store.run_job(job).unwrap(), JobStatus::Running { .. }));
+    assert!(matches!(
+        store.run_job(job).unwrap(),
+        JobStatus::Running { .. }
+    ));
 
-    let handled_before = store.jobs().iter().find(|j| j.id == job).unwrap().handled.len();
+    let handled_before = store
+        .jobs()
+        .iter()
+        .find(|j| j.id == job)
+        .unwrap()
+        .handled
+        .len();
     let target_ids_before: Vec<u64> = store
         .jobs()
         .iter()
@@ -494,7 +514,10 @@ fn a_job_resumes_after_reopen_without_redoing_steps() {
         .map(|s| s.id)
         .collect();
     for id in &target_ids_before {
-        assert!(final_ids.contains(id), "step {id} must survive to the final table, not be redone");
+        assert!(
+            final_ids.contains(id),
+            "step {id} must survive to the final table, not be redone"
+        );
     }
 
     drop(store);
@@ -602,12 +625,21 @@ fn revert_after_add_column_is_free_and_keeps_new_writes() {
 
     let mut got = flatten(&store.snapshot().scan(&table()).unwrap());
     got.sort_unstable();
-    let mut want: Vec<Row> = (0..3u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want: Vec<Row> = (0..3u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want.push((9, 0));
     want.sort_unstable();
-    assert_eq!(got, want, "every row, including the post-swap batch, survives");
+    assert_eq!(
+        got, want,
+        "every row, including the post-swap batch, survives"
+    );
 
-    assert_eq!(count_seg_files(&dir), count_before, "REVERT must not rewrite or drop files");
+    assert_eq!(
+        count_seg_files(&dir),
+        count_before,
+        "REVERT must not rewrite or drop files"
+    );
 
     drop(store);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -630,7 +662,10 @@ fn revert_after_drop_column_brings_the_values_back() {
         )
         .unwrap();
     store
-        .write(&table(), extra_batch(&[(0, 0, Some("v0")), (1, 0, Some("v1"))]))
+        .write(
+            &table(),
+            extra_batch(&[(0, 0, Some("v0")), (1, 0, Some("v1"))]),
+        )
         .unwrap();
 
     store
@@ -690,7 +725,10 @@ fn revert_after_compaction_is_refused() {
     assert!(store.compact(&table()).unwrap().is_some());
 
     let err = store.revert_table(&table()).unwrap_err();
-    assert!(matches!(err, Error::Manifest(manifest::Error::RevertStale { .. })), "{err}");
+    assert!(
+        matches!(err, Error::Manifest(manifest::Error::RevertStale { .. })),
+        "{err}"
+    );
 
     drop(store);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -767,7 +805,9 @@ fn drop_and_undrop() {
     store.undrop_table(&table()).unwrap();
     let mut got = flatten(&store.snapshot().scan(&table()).unwrap());
     got.sort_unstable();
-    let mut want: Vec<Row> = (0..3u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want: Vec<Row> = (0..3u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want.sort_unstable();
     assert_eq!(got, want);
     assert_eq!(store.table(&table()).unwrap().id, orig_id);
@@ -778,7 +818,9 @@ fn drop_and_undrop() {
     ));
 
     store.drop_table(&table()).unwrap();
-    store.create_table(TableSpec::new(table(), schema())).unwrap();
+    store
+        .create_table(TableSpec::new(table(), schema()))
+        .unwrap();
     assert!(matches!(
         store.undrop_table(&table()),
         Err(Error::Manifest(manifest::Error::Conflict { .. }))
@@ -813,7 +855,9 @@ fn dropped_table_files_survive_reopen_and_go_after_retention() {
     store.undrop_table(&table()).unwrap();
     let mut got = flatten(&store.snapshot().scan(&table()).unwrap());
     got.sort_unstable();
-    let mut want: Vec<Row> = (0..3u64).flat_map(|b| (0..4u32).map(move |i| (b, i))).collect();
+    let mut want: Vec<Row> = (0..3u64)
+        .flat_map(|b| (0..4u32).map(move |i| (b, i)))
+        .collect();
     want.sort_unstable();
     assert_eq!(got, want);
 
@@ -860,7 +904,10 @@ fn truncate_empties_but_keeps_the_table() {
     assert_eq!(after_field_ids, field_ids);
 
     store.write(&table(), row_batch(&[(9, 0)])).unwrap();
-    assert_eq!(flatten(&store.snapshot().scan(&table()).unwrap()), vec![(9, 0)]);
+    assert_eq!(
+        flatten(&store.snapshot().scan(&table()).unwrap()),
+        vec![(9, 0)]
+    );
 
     store.gc().unwrap();
     let old_paths: Vec<PathBuf> = before
@@ -901,7 +948,10 @@ fn guardrails() {
     assert!(matches!(
         store.explain_alter(
             &table(),
-            &[Alter::PartitionBy(Some(("batch".to_string(), Duration::from_secs(1))))],
+            &[Alter::PartitionBy(Some((
+                "batch".to_string(),
+                Duration::from_secs(1)
+            )))],
         ),
         Err(Error::Manifest(manifest::Error::MigrationNotBuilt { .. }))
     ));
@@ -1018,7 +1068,10 @@ impl CrashTarget for MigrateTarget {
         let has_extra = fields.iter().any(|f| f.name == "extra");
 
         let batch_col: Vec<Value> = batch.iter().map(|&(b, _)| Value::UInt64(b)).collect();
-        let idx_col: Vec<Value> = batch.iter().map(|&(_, i)| Value::UInt64(u64::from(i))).collect();
+        let idx_col: Vec<Value> = batch
+            .iter()
+            .map(|&(_, i)| Value::UInt64(u64::from(i)))
+            .collect();
         let mut cols = vec![
             Column::from_values(&DataType::UInt64, &batch_col).unwrap(),
             Column::from_values(&DataType::UInt64, &idx_col).unwrap(),

@@ -33,5 +33,8 @@ are views of shared files; the library API comes first.
   to `_` today) and changing a column's type (needs coerce-on-read).
 - The rollup guardrail is checked against an always-empty dependency list until rollups exist
   (adelie-zit.2); it cannot fire yet.
-- Grace: `StoreOptions::retain_definitions`, default 24 hours, separate from `gc_grace`. Writes
-  racing a `DROP TABLE` are ordered before it and go with the table.
+- Grace: `StoreOptions::retain_definitions`, default 24 hours, separate from `gc_grace`. A
+  `DROP TABLE` waits for the table's buffered writes to flush, so every acked write lands
+  before it; a table written continuously refuses the drop as busy.
+- While a job runs on a table, compaction of it and a `DELETE` naming a column the job drops
+  are refused (`JobRunning`), checked in the commit itself so no race slips past.

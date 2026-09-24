@@ -139,17 +139,15 @@ impl SegmentEntry {
         let field_ids: Vec<FieldId> = schema.iter().map(|f| f.id).collect();
         let columns: Vec<ColumnStats> = schema
             .iter()
-            .map(
-                |f| match self.field_ids.iter().position(|&id| id == f.id) {
-                    Some(j) => self.columns[j].clone(),
-                    None => ColumnStats {
-                        rows: self.rows as usize,
-                        null_count: self.rows as usize,
-                        min: None,
-                        max: None,
-                    },
+            .map(|f| match self.field_ids.iter().position(|&id| id == f.id) {
+                Some(j) => self.columns[j].clone(),
+                None => ColumnStats {
+                    rows: self.rows as usize,
+                    null_count: self.rows as usize,
+                    min: None,
+                    max: None,
                 },
-            )
+            })
             .collect();
         // A file column keeps its id only when self itself has real stats for it (was one of
         // self's own `field_ids`); everything else — a column `self` never read, or the
@@ -626,10 +624,7 @@ mod tests {
         assert_eq!(p.columns[2].max, None);
         // id 3 was never in `field_ids`, so it never gets a slot at all; only the physical
         // columns the entry actually read (1, 2) survive, id 3 zeroed.
-        assert_eq!(
-            p.file_field_ids,
-            vec![FieldId(1), FieldId(2), FieldId(0)]
-        );
+        assert_eq!(p.file_field_ids, vec![FieldId(1), FieldId(2), FieldId(0)]);
     }
 
     #[test]
@@ -641,10 +636,7 @@ mod tests {
         assert_eq!(p.columns, vec![s.columns[0].clone()]);
         // id 2's stats are gone (not in the new schema), but the file still carries it, so its
         // slot in file_field_ids keeps the real id, not FieldId(0).
-        assert_eq!(
-            p.file_field_ids,
-            vec![FieldId(1), FieldId(2), FieldId(0)]
-        );
+        assert_eq!(p.file_field_ids, vec![FieldId(1), FieldId(2), FieldId(0)]);
     }
 
     #[test]
@@ -672,10 +664,7 @@ mod tests {
         assert_eq!(c3.rows, c3.null_count);
         assert_eq!(c3.min, None);
         assert_eq!(c3.max, None);
-        assert_eq!(
-            p.file_field_ids,
-            vec![FieldId(1), FieldId(2), FieldId(0)]
-        );
+        assert_eq!(p.file_field_ids, vec![FieldId(1), FieldId(2), FieldId(0)]);
     }
 
     // ── references_segment / job / job_for ──────────────────────────────
@@ -747,10 +736,7 @@ mod tests {
 
         assert_eq!(m.job(1).map(|j| j.source), Some(TableId(5)));
         assert_eq!(m.job(2), None);
-        assert_eq!(
-            m.job_for(&TableName::new("d", "t")).map(|j| j.id),
-            Some(1)
-        );
+        assert_eq!(m.job_for(&TableName::new("d", "t")).map(|j| j.id), Some(1));
         assert_eq!(m.job_for(&TableName::new("d", "other")), None);
     }
 }
