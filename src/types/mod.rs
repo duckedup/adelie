@@ -12,3 +12,8 @@ pub use datatype::*;
 pub use fit::{COMPANION_SUFFIX, coerce, companion_name, fits};
 pub use order::{sql_eq, total_cmp};
 pub use value::*;
+
+/// The civil-date conversions, shared with `exec::expr::time` (adelie-1st.1) so it does not
+/// duplicate Howard Hinnant's algorithm.
+pub(crate) use parse::days_from_civil;
+pub(crate) use text::civil_from_days;

@@ -1,0 +1,102 @@
+# Pins the 1st.1 scalar function library (length, substr edge cases, regexp_matches, date_trunc,
+# time_bucket, extract, date_part, count(DISTINCT)) and the wsr.1 coalesce_text companion read.
+# SPEC §8: scalar functions (string, regex, date/time) and companion columns (Q2).
+
+query I
+SELECT length('héllo')
+----
+5
+
+query T
+SELECT substr('hello', 0, 2)
+----
+h
+
+query T
+SELECT substr('hello', 10)
+----
+(empty)
+
+statement ok
+CREATE TABLE re (s TEXT)
+
+statement ok
+INSERT INTO re VALUES ('aab'), ('xyz'), ('caab')
+
+query T rowsort
+SELECT regexp_matches(s, 'a+b') FROM re
+----
+false
+true
+true
+
+# adelie also accepts the singular spelling; DuckDB only has `regexp_matches`.
+onlyif adelie
+query T
+SELECT regexp_match('aab', 'a+b')
+----
+true
+
+query T
+SELECT date_trunc('month', TIMESTAMP '2024-02-29T13:00:00Z')
+----
+2024-02-01 00:00:00
+
+query T
+SELECT date_trunc('week', TIMESTAMP '2024-01-07T00:00:00Z')
+----
+2024-01-01 00:00:00
+
+query T
+SELECT date_trunc('year', TIMESTAMP '1969-12-31T23:59:59Z')
+----
+1969-01-01 00:00:00
+
+query T
+SELECT time_bucket(INTERVAL '15 minutes', TIMESTAMP '2024-01-01T00:07:00Z')
+----
+2024-01-01 00:00:00
+
+query I
+SELECT extract(year FROM TIMESTAMP '2024-03-04T05:06:07Z')
+----
+2024
+
+query I
+SELECT extract(dow FROM DATE '2024-01-07')
+----
+0
+
+query I
+SELECT extract(week FROM DATE '2021-01-03')
+----
+53
+
+query I
+SELECT date_part('hour', TIMESTAMP '2024-03-04T05:06:07Z')
+----
+5
+
+statement ok
+CREATE TABLE dv (v INTEGER)
+
+statement ok
+INSERT INTO dv VALUES (1), (2), (2), (NULL), (3), (NULL), (1)
+
+query I
+SELECT count(DISTINCT v) FROM dv
+----
+3
+
+statement ok
+CREATE TABLE ct (x BIGINT, "x::string" TEXT)
+
+statement ok
+INSERT INTO ct (x) VALUES (42)
+
+# coalesce_text needs no CSV/COPY input: adelie-only, since DuckDB has no companion columns.
+onlyif adelie
+query T
+SELECT coalesce_text(x) FROM ct
+----
+42

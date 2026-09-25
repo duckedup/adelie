@@ -1,9 +1,9 @@
 //! `bench <smoke|clickbench|otel> [options]`: runs the ClickBench-subset and OTel-shaped
-//! query suites over deterministic generated data (or real parquet, for clickbench) and
-//! prints a markdown report. Args are parsed by hand; no clap.
+//! query suites over deterministic generated data (or real parquet, for clickbench) against
+//! DuckDB and adelie, and prints a markdown report. Args are parsed by hand; no clap.
 #![deny(unsafe_code)]
 
-use adelie_bench::{DuckDb, data, suite};
+use adelie_bench::{Adelie, DuckDb, data, suite};
 use adelie_harness::engine::{Engine, EngineError, Outcome};
 
 fn main() {
@@ -62,35 +62,65 @@ where
     raw.parse().unwrap_or_else(|e| panic!("{flag} {raw}: {e}"))
 }
 
-/// hits 2_000 rows, otel 1_000 spans, one run, every query in both suites against DuckDB.
-/// Exits 1 if any query errors or returns zero rows: on generated data that means the
-/// generator or the query is wrong.
+/// hits 2_000 rows, otel 1_000 spans, one run, every ClickBench query cross-checked between
+/// DuckDB and a fresh adelie; OTel runs against adelie too but report-only. Exits 1 on a
+/// ClickBench mismatch/adelie error or a zero-row DuckDB query, never on an OTel one.
 fn smoke() {
     let mut db = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
+    let mut adelie = Adelie::new().unwrap_or_else(|e| panic!("opening adelie: {e}"));
     suite::run_setup(&mut db, "otel");
+    suite::run_setup(&mut adelie, "otel");
 
     let hits = data::hits(2_000, 1);
     data::load(&mut db, &hits).unwrap_or_else(|e| panic!("loading hits: {e}"));
+    data::load(&mut adelie, &hits).unwrap_or_else(|e| panic!("loading hits (adelie): {e}"));
     let (spans, logs) = data::otel(1_000, 1);
     data::load(&mut db, &spans).unwrap_or_else(|e| panic!("loading otel.spans: {e}"));
+    data::load(&mut adelie, &spans).unwrap_or_else(|e| panic!("loading otel.spans (adelie): {e}"));
     data::load(&mut db, &logs).unwrap_or_else(|e| panic!("loading otel.logs: {e}"));
+    data::load(&mut adelie, &logs).unwrap_or_else(|e| panic!("loading otel.logs (adelie): {e}"));
 
     let mut failed = false;
-    for name in ["clickbench", "otel"] {
-        for q in suite::load_queries(name) {
-            match db.run(&q.sql) {
-                Ok(Outcome::Rows(rows)) if rows.is_empty() => {
-                    eprintln!("smoke: {name}/{} returned zero rows", q.name);
-                    failed = true;
-                }
-                Ok(_) => println!("ok  {name}/{}", q.name),
-                Err(e) => {
-                    eprintln!("smoke: {name}/{}: {e}", q.name);
-                    failed = true;
-                }
+
+    for q in suite::load_queries("clickbench") {
+        let duck = db.run(&q.sql);
+        if matches!(&duck, Ok(Outcome::Rows(rows)) if rows.is_empty()) {
+            eprintln!("smoke: clickbench/{} returned zero rows", q.name);
+            failed = true;
+        }
+        let ade = adelie.run(&q.sql);
+        if let Err(e) = &ade {
+            eprintln!("smoke: clickbench/{}: adelie: {e}", q.name);
+            failed = true;
+        }
+        let outcomes = vec![("duckdb".to_string(), duck), ("adelie".to_string(), ade)];
+        match suite::cross_check(&outcomes) {
+            Some(mismatch) => {
+                eprintln!("smoke: clickbench/{}: mismatch: {mismatch}", q.name);
+                failed = true;
             }
+            None => println!("ok  clickbench/{}", q.name),
         }
     }
+
+    for q in suite::load_queries("otel") {
+        let duck = db.run(&q.sql);
+        if matches!(&duck, Ok(Outcome::Rows(rows)) if rows.is_empty()) {
+            eprintln!("smoke: otel/{} returned zero rows", q.name);
+            failed = true;
+        }
+        let ade = adelie.run(&q.sql);
+        if let Err(e) = &ade {
+            println!("adelie: unsupported: otel/{}: {e}", q.name);
+            continue;
+        }
+        let outcomes = vec![("duckdb".to_string(), duck), ("adelie".to_string(), ade)];
+        match suite::cross_check(&outcomes) {
+            Some(_) => println!("mismatch (report-only)  otel/{}", q.name),
+            None => println!("ok  otel/{}", q.name),
+        }
+    }
+
     if failed {
         std::process::exit(1);
     }
@@ -99,17 +129,38 @@ fn smoke() {
 fn clickbench(raw: Vec<String>) {
     let args = parse_args(raw, 3, 42);
     let mut db = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
+    let mut adelie = Adelie::new().unwrap_or_else(|e| panic!("opening adelie: {e}"));
+    // Parquet loading is DuckDB-only (`read_parquet`); COPY takes CSV/NDJSON, not Parquet, so
+    // adelie has no rows to query in that case and is left out of the suite entirely.
+    let run_adelie = args.hits_path.is_none();
     let rows = match &args.hits_path {
-        Some(path) => load_hits_from_parquet(&mut db, path),
+        Some(path) => {
+            println!("note: --hits loads Parquet via DuckDB only; adelie is skipped");
+            load_hits_from_parquet(&mut db, path)
+        }
         None => {
             let rows = args.rows.unwrap_or(1_000_000);
             let table = data::hits(rows, args.seed);
-            data::load(&mut db, &table).unwrap_or_else(|e| panic!("loading hits: {e}"));
+            let duck_secs = data::load(&mut db, &table)
+                .unwrap_or_else(|e| panic!("loading hits: {e}"))
+                .as_secs_f64();
+            let adelie_secs = data::load(&mut adelie, &table)
+                .unwrap_or_else(|e| panic!("loading hits (adelie): {e}"))
+                .as_secs_f64();
+            println!("# hits ingest\n");
+            println!("| table | rows | seconds | rows/s |");
+            println!("|---|---|---|---|");
+            print_ingest_row("duckdb hits", rows, duck_secs);
+            print_ingest_row("adelie hits", rows, adelie_secs);
+            println!();
             rows
         }
     };
-    let mut engine: &mut dyn Engine = &mut db;
-    let results = suite::run_suite(std::slice::from_mut(&mut engine), "clickbench", args.runs);
+    let mut engines: Vec<&mut dyn Engine> = vec![&mut db];
+    if run_adelie {
+        engines.push(&mut adelie);
+    }
+    let results = suite::run_suite(&mut engines, "clickbench", args.runs);
     println!("# clickbench ({rows} rows, {} runs)\n", args.runs);
     println!("{}", suite::markdown(&results));
 }
@@ -148,27 +199,33 @@ fn otel_cmd(raw: Vec<String>) {
     let args = parse_args(raw, 3, 42);
     let spans_n = args.spans.unwrap_or(1_000_000);
     let mut db = DuckDb::new().unwrap_or_else(|e| panic!("opening duckdb: {e}"));
+    let mut adelie = Adelie::new().unwrap_or_else(|e| panic!("opening adelie: {e}"));
     suite::run_setup(&mut db, "otel");
+    suite::run_setup(&mut adelie, "otel");
 
     let (spans, logs) = data::otel(spans_n, args.seed);
     let span_secs = load_timed(&mut db, &spans);
     let log_secs = load_timed(&mut db, &logs);
+    let adelie_span_secs = load_timed(&mut adelie, &spans);
+    let adelie_log_secs = load_timed(&mut adelie, &logs);
 
     println!("# otel ingest\n");
     println!("| table | rows | seconds | rows/s |");
     println!("|---|---|---|---|");
-    print_ingest_row("otel.spans", spans.rows.len(), span_secs);
-    print_ingest_row("otel.logs", logs.rows.len(), log_secs);
+    print_ingest_row("duckdb otel.spans", spans.rows.len(), span_secs);
+    print_ingest_row("adelie otel.spans", spans.rows.len(), adelie_span_secs);
+    print_ingest_row("duckdb otel.logs", logs.rows.len(), log_secs);
+    print_ingest_row("adelie otel.logs", logs.rows.len(), adelie_log_secs);
     println!();
 
-    let mut engine: &mut dyn Engine = &mut db;
-    let results = suite::run_suite(std::slice::from_mut(&mut engine), "otel", args.runs);
+    let mut engines: Vec<&mut dyn Engine> = vec![&mut db, &mut adelie];
+    let results = suite::run_suite(&mut engines, "otel", args.runs);
     println!("# otel queries ({spans_n} spans, {} runs)\n", args.runs);
     println!("{}", suite::markdown(&results));
 }
 
-fn load_timed(db: &mut DuckDb, t: &data::Table) -> f64 {
-    let elapsed: Result<std::time::Duration, EngineError> = data::load(db, t);
+fn load_timed(engine: &mut dyn Engine, t: &data::Table) -> f64 {
+    let elapsed: Result<std::time::Duration, EngineError> = data::load(engine, t);
     elapsed
         .unwrap_or_else(|e| panic!("loading {}: {e}", t.name))
         .as_secs_f64()

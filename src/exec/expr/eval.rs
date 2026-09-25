@@ -6,8 +6,8 @@ use crate::exec::kernels::{
 use crate::exec::{Batch, Bitmap, Column, ColumnBuilder, ExecError};
 use crate::types::{DataType, Value};
 
-use super::{CmpOp, Expr};
-use super::{arith, cast, like};
+use super::{CmpOp, Expr, ScalarFunc};
+use super::{arith, cast, func, like};
 
 /// Recurses after typing the whole expression, so an ill-typed plan fails as `Plan` before any
 /// work is done (the recursive calls re-check their own subtree the same way).
@@ -53,6 +53,7 @@ pub fn eval(expr: &Expr, batch: &Batch) -> Result<Column, ExecError> {
             let c = eval(e, batch)?;
             cast::cast(&c, &ty)
         }
+        Expr::Func { func: f, args } => eval_func_call(f, args, batch),
     }
 }
 
@@ -140,6 +141,16 @@ fn eval_between(
     let le_high = eval_cmp(CmpOp::Le, expr, high, batch)?;
     let result = and(&ge_low, &le_high);
     Ok(if negated { not(&result) } else { result })
+}
+
+/// Evaluates every arg (already typed by the caller via `expr.data_type`), then dispatches to
+/// the function's kernel — the `Func` counterpart to `eval_like` above.
+fn eval_func_call(f: &ScalarFunc, args: &[Expr], batch: &Batch) -> Result<Column, ExecError> {
+    let cols: Vec<Column> = args
+        .iter()
+        .map(|a| eval(a, batch))
+        .collect::<Result<_, _>>()?;
+    func::eval_func(f, &cols, batch.rows())
 }
 
 fn eval_like(
@@ -455,6 +466,19 @@ mod tests {
         let out = eval(&c, &b).unwrap();
         assert_type_matches(&c, &b, &out);
         assert_eq!(out.get(0), Value::Float64(1.0));
+    }
+
+    #[test]
+    fn func_dispatches_through_eval() {
+        let s = Column::from_values(&DataType::String, &[Value::String("Charlie".into())]).unwrap();
+        let b = batch(vec![field("s", DataType::String)], vec![s]);
+        let e = Expr::Func {
+            func: ScalarFunc::Lower,
+            args: vec![Expr::col(0)],
+        };
+        let out = eval(&e, &b).unwrap();
+        assert_type_matches(&e, &b, &out);
+        assert_eq!(out.get(0), Value::String("charlie".into()));
     }
 
     #[test]

@@ -1,0 +1,5 @@
+{"ts": "2024-01-01T00:00:00Z", "service.name": "checkout", "attributes": {"http": {"route": "/pay"}}, "cost": 12.34}
+
+{"ts": "2024-01-01T01:00:00Z", "service.name": "checkout", "attributes": {"http": {"route": "/pay"}}, "cost": 7.66}
+{"ts": "2024-01-01T02:00:00Z", "service.name": "cart", "attributes": {"http": {"route": "/cart"}}, "cost": null}
+{"ts": "2024-01-01T03:00:00Z", "service.name": "cart", "attributes": {"http": {"route": "/cart"}}, "cost": 5.00}

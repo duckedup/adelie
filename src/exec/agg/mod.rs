@@ -69,6 +69,12 @@ fn arity(func: &AggFunc) -> usize {
     }
 }
 
+/// The output type of `func` over `arg_types`, read off the accumulator that computes it, so a
+/// planner's belief can never drift from the executor's result.
+pub fn output_type(func: &AggFunc, arg_types: &[DataType]) -> Result<DataType, ExecError> {
+    Ok(accumulator(func, arg_types)?.data_type())
+}
+
 /// U9's factory: one constructor per `AggFunc`/arg-type combination (the root blueprint's
 /// §Contract table names each one). Wrong arity, or a type a constructor rejects, is `Plan`.
 pub(crate) fn accumulator(
@@ -85,6 +91,7 @@ pub(crate) fn accumulator(
     let acc: Box<dyn GroupsAccumulator> = match func {
         AggFunc::CountStar => Box::new(basic::CountAccumulator::new(true)),
         AggFunc::Count => Box::new(basic::CountAccumulator::new(false)),
+        AggFunc::CountDistinct => Box::new(collect::CountDistinctAccumulator::new(&arg_types[0])?),
         AggFunc::Sum => Box::new(basic::SumAccumulator::new(&arg_types[0])?),
         AggFunc::Avg => Box::new(basic::AvgAccumulator::new(&arg_types[0])?),
         AggFunc::Min => Box::new(basic::MinMaxAccumulator::new(&arg_types[0], false)?),
@@ -119,6 +126,7 @@ mod tests {
         vec![
             (AggFunc::CountStar, vec![]),
             (AggFunc::Count, vec![DataType::Int64]),
+            (AggFunc::CountDistinct, vec![DataType::Int64]),
             (AggFunc::Sum, vec![DataType::Int64]),
             (AggFunc::Avg, vec![DataType::Int64]),
             (AggFunc::Min, vec![DataType::Int64]),

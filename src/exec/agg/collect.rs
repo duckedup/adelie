@@ -2,7 +2,7 @@
 //! Each keeps every row it sees (or a value→count map), so `finish` does the real work.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 
 use crate::exec::kernels::rowkey::{NullKeys, encode_row_key};
@@ -261,6 +261,121 @@ impl GroupsAccumulator for QuantileAccumulator {
         self.states
             .iter()
             .map(|v| v.capacity() * size_of::<Value>())
+            .sum()
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+}
+
+/// `COUNT(DISTINCT x)`: an exact set of `encode_row_key`-encoded keys per group (any
+/// non-LIST type). NULLs are ignored. A group nothing reaches is 0, not NULL.
+pub(crate) struct CountDistinctAccumulator {
+    states: Vec<BTreeSet<Vec<u8>>>,
+}
+
+impl CountDistinctAccumulator {
+    pub(crate) fn new(ty: &DataType) -> Result<Self, ExecError> {
+        if matches!(ty, DataType::List(_)) {
+            return Err(ExecError::Plan(
+                "count(distinct) does not support LIST".into(),
+            ));
+        }
+        Ok(CountDistinctAccumulator { states: Vec::new() })
+    }
+}
+
+impl GroupsAccumulator for CountDistinctAccumulator {
+    fn update(
+        &mut self,
+        groups: &[usize],
+        total_groups: usize,
+        args: &[&Column],
+        filter: Option<&Bitmap>,
+    ) -> Result<(), ExecError> {
+        ensure_len(&mut self.states, total_groups, BTreeSet::new());
+        let col = args[0];
+        for (r, &g) in groups.iter().enumerate() {
+            if filter.is_some_and(|f| !f.get(r)) || col.is_null(r) {
+                continue;
+            }
+            let mut key = Vec::new();
+            let _ = encode_row_key(&[col], r, NullKeys::Group, &mut key);
+            self.states[g].insert(key);
+        }
+        Ok(())
+    }
+
+    fn merge(
+        &mut self,
+        groups: &[usize],
+        total_groups: usize,
+        other: Box<dyn GroupsAccumulator>,
+    ) -> Result<(), ExecError> {
+        ensure_len(&mut self.states, total_groups, BTreeSet::new());
+        let other = downcast::<Self>(other)?;
+        for (g, &target) in groups.iter().enumerate() {
+            if let Some(set) = other.states.get(g) {
+                self.states[target].extend(set.iter().cloned());
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>, total_groups: usize) -> Result<Column, ExecError> {
+        let mut this = *self;
+        ensure_len(&mut this.states, total_groups, BTreeSet::new());
+        let values: Vec<Value> = (0..total_groups)
+            .map(|g| Value::Int64(this.states[g].len() as i64))
+            .collect();
+        Ok(Column::from_values(&DataType::Int64, &values)?)
+    }
+
+    fn data_type(&self) -> DataType {
+        DataType::Int64
+    }
+
+    fn encode_state(&self, group: usize, out: &mut Vec<u8>) {
+        let mut s = Sink::new();
+        s.u8(STATE_VERSION);
+        let empty = BTreeSet::new();
+        let set = self.states.get(group).unwrap_or(&empty);
+        s.uvarint(set.len() as u64);
+        for key in set {
+            s.bytes(key);
+        }
+        out.extend_from_slice(&s.into_vec());
+    }
+
+    fn merge_encoded(
+        &mut self,
+        group: usize,
+        total_groups: usize,
+        bytes: &[u8],
+    ) -> Result<(), ExecError> {
+        ensure_len(&mut self.states, total_groups, BTreeSet::new());
+        let mut cur = Cursor::new(bytes);
+        check_version(&mut cur, "count_distinct")?;
+        let n = cur.uvarint().map_err(|e| invalid("count_distinct", e))?;
+        let n = cur
+            .guard_len(n, 1)
+            .map_err(|e| invalid("count_distinct", e))?;
+        for _ in 0..n {
+            let key = cur.bytes().map_err(|e| invalid("count_distinct", e))?;
+            self.states[group].insert(key.to_vec());
+        }
+        Ok(())
+    }
+
+    fn byte_size(&self) -> usize {
+        self.states
+            .iter()
+            .map(|set| {
+                set.iter()
+                    .map(|k| k.capacity() + size_of::<Vec<u8>>())
+                    .sum::<usize>()
+            })
             .sum()
     }
 
@@ -616,5 +731,119 @@ mod tests {
         assert_merge_encoded_rejects_garbage(|| {
             Box::new(HistogramAccumulator::new(&DataType::Int64).unwrap())
         });
+    }
+
+    #[test]
+    fn count_distinct_1_1_2_null_3_ignores_null_and_dedupes() {
+        let c = col(
+            &DataType::Int64,
+            &[
+                Value::Int64(1),
+                Value::Int64(1),
+                Value::Int64(2),
+                Value::Null,
+                Value::Int64(3),
+            ],
+        );
+        let groups = [0, 0, 0, 0, 0];
+        let mut acc = CountDistinctAccumulator::new(&DataType::Int64).unwrap();
+        acc.update(&groups, 1, &[&c], None).unwrap();
+        assert_eq!(Box::new(acc).finish(1).unwrap().get(0), Value::Int64(3));
+    }
+
+    #[test]
+    fn count_distinct_empty_group_is_zero_not_null() {
+        let c = col(&DataType::Int64, &[Value::Int64(1), Value::Int64(2)]);
+        let groups = [0, 0];
+        let mut acc = CountDistinctAccumulator::new(&DataType::Int64).unwrap();
+        acc.update(&groups, 2, &[&c], None).unwrap();
+        let got = Box::new(acc).finish(2).unwrap();
+        assert_eq!(got.get(0), Value::Int64(2));
+        assert_eq!(got.get(1), Value::Int64(0));
+    }
+
+    #[test]
+    fn count_distinct_merge_unions_overlapping_keys() {
+        let c1 = col(&DataType::Int64, &[Value::Int64(1), Value::Int64(2)]);
+        let c2 = col(&DataType::Int64, &[Value::Int64(2), Value::Int64(3)]);
+        let mut a = CountDistinctAccumulator::new(&DataType::Int64).unwrap();
+        a.update(&[0, 0], 1, &[&c1], None).unwrap();
+        let mut b = CountDistinctAccumulator::new(&DataType::Int64).unwrap();
+        b.update(&[0, 0], 1, &[&c2], None).unwrap();
+        a.merge(&[0], 1, Box::new(b)).unwrap();
+        // A count-sum merge would give 4; the union gives 3.
+        assert_eq!(Box::new(a).finish(1).unwrap().get(0), Value::Int64(3));
+    }
+
+    #[test]
+    fn count_distinct_filter_excludes_rows() {
+        let c = col(
+            &DataType::Int64,
+            &[Value::Int64(1), Value::Int64(2), Value::Int64(3)],
+        );
+        let mut filter = Bitmap::new_valid(3);
+        filter.set(1, false);
+        let groups = [0, 0, 0];
+        let mut acc = CountDistinctAccumulator::new(&DataType::Int64).unwrap();
+        acc.update(&groups, 1, &[&c], Some(&filter)).unwrap();
+        assert_eq!(Box::new(acc).finish(1).unwrap().get(0), Value::Int64(2));
+    }
+
+    #[test]
+    fn count_distinct_rejects_list() {
+        let list_ty = DataType::list(DataType::Int64).unwrap();
+        assert!(matches!(
+            CountDistinctAccumulator::new(&list_ty),
+            Err(ExecError::Plan(_))
+        ));
+    }
+
+    #[test]
+    fn count_distinct_check_split() {
+        let c = col(
+            &DataType::Int64,
+            &[
+                Value::Int64(1),
+                Value::Int64(2),
+                Value::Int64(1),
+                Value::Null,
+                Value::Int64(2),
+                Value::Int64(1),
+            ],
+        );
+        let groups = [0, 1, 0, 2, 1, 0];
+        check_split(
+            || Box::new(CountDistinctAccumulator::new(&DataType::Int64).unwrap()),
+            &[c],
+            None,
+            &groups,
+            4,
+        );
+    }
+
+    #[test]
+    fn count_distinct_merge_encoded_rejects_garbage() {
+        assert_merge_encoded_rejects_garbage(|| {
+            Box::new(CountDistinctAccumulator::new(&DataType::Int64).unwrap())
+        });
+    }
+
+    #[test]
+    fn count_distinct_normalises_float_negative_zero_and_distinguishes_trailing_space() {
+        let floats = col(
+            &DataType::Float64,
+            &[Value::Float64(-0.0), Value::Float64(0.0)],
+        );
+        let mut fa = CountDistinctAccumulator::new(&DataType::Float64).unwrap();
+        fa.update(&[0, 0], 1, &[&floats], None).unwrap();
+        assert_eq!(Box::new(fa).finish(1).unwrap().get(0), Value::Int64(1));
+
+        let strings = col(
+            &DataType::String,
+            &[Value::String("a".into()), Value::String("a ".into())],
+        );
+        let mut sa = CountDistinctAccumulator::new(&DataType::String).unwrap();
+        sa.update(&[0, 0], 1, &[&strings], None).unwrap();
+        assert_eq!(Box::new(sa).finish(1).unwrap().get(0), Value::Int64(2));
     }
 }

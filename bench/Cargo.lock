@@ -3,9 +3,14 @@
 version = 4
 
 [[package]]
+name = "adelie"
+version = "0.10.0"
+
+[[package]]
 name = "adelie-bench"
 version = "0.0.0"
 dependencies = [
+ "adelie",
  "adelie-harness",
  "duckdb",
 ]

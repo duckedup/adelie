@@ -353,8 +353,12 @@ fn render_literal(v: &Value, sql_type: &str) -> String {
         Value::UInt(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Decimal { value, scale } => render_decimal_literal(*value, *scale),
+        // Typed literals: adelie never parses a plain string into a DATE/TIMESTAMP (D0016).
         Value::Text(s) if sql_type.eq_ignore_ascii_case("TIMESTAMP") => {
             format!("TIMESTAMP '{}'", escape_text(s))
+        }
+        Value::Text(s) if sql_type.eq_ignore_ascii_case("DATE") => {
+            format!("DATE '{}'", escape_text(s))
         }
         Value::Text(s) => format!("'{}'", escape_text(s)),
         Value::Bytes(b) => {
@@ -373,7 +377,8 @@ fn render_literal(v: &Value, sql_type: &str) -> String {
 }
 
 /// Loads `t` into `engine`: `CREATE TABLE`, then multi-row `INSERT` in chunks of 1000 rows.
-/// Engine-neutral; adelie takes the same path at E6. Returns only the insert time.
+/// Engine-neutral; adelie now takes this same path (E6), since its parser accepts these
+/// DuckDB-style type names too (binder.rs's `map_type_name`). Returns only the insert time.
 pub fn load(engine: &mut dyn Engine, t: &Table) -> Result<Duration, EngineError> {
     let col_defs: Vec<String> = t
         .columns
