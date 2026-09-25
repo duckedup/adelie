@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn non_ascii_date_and_timestamp_text_is_none_not_a_panic() {
-        for text in ["2024-é-01", "é2024-01-01", "2024-01-0é", "2024-01-01T1é:00:00Z"] {
+        // `é` straddles byte `len - 6`, where the date split falls.
+        for text in ["1é01-01", "1é01-01T00:00:00Z", "2024-é-01"] {
             assert_eq!(Value::from_text(text, &DataType::Date), None, "{text}");
             assert_eq!(Value::from_text(text, &DataType::Timestamp), None, "{text}");
         }
