@@ -14,6 +14,9 @@ fn opts() -> StoreOptions {
         flush_interval: Duration::from_millis(5),
         gc_grace: Duration::ZERO,
         compact_min_inputs: 2,
+        // `compacting_an_old_table_moves_it_into_the_id_layout` asserts the legacy segment is
+        // gone right after gc; the AT VERSION retain window would otherwise keep it around.
+        retain_manifests: 0,
         ..Default::default()
     }
 }

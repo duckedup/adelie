@@ -20,6 +20,9 @@ fn opts() -> StoreOptions {
         retain_definitions: Duration::from_secs(3600),
         job_step_segments: 1,
         job_swap_gap: 0,
+        // This suite asserts files are gone right after compact/gc; the AT VERSION retain
+        // window would otherwise keep them around.
+        retain_manifests: 0,
         ..Default::default()
     }
 }

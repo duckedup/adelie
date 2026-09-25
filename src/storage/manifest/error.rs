@@ -103,6 +103,10 @@ pub enum Error {
         table: String,
         kind: String,
     },
+    /// `RecordMigration` for a file name already in the ledger (SPEC §19, D0014).
+    MigrationRecorded {
+        name: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -195,6 +199,7 @@ impl fmt::Display for Error {
             Error::MigrationNotBuilt { table, kind } => {
                 write!(f, "table {table}: {kind} is not built yet")
             }
+            Error::MigrationRecorded { name } => write!(f, "migration {name}: already recorded"),
         }
     }
 }
@@ -345,5 +350,15 @@ mod tests {
         }
         .to_string();
         assert!(msg.contains("PARTITION BY"));
+    }
+
+    #[test]
+    fn migration_recorded_names_the_file() {
+        let msg = Error::MigrationRecorded {
+            name: "0001_init.sql".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("0001_init.sql"));
+        assert!(msg.contains("already recorded"));
     }
 }

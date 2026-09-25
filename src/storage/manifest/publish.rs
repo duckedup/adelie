@@ -110,6 +110,26 @@ impl Publisher {
             Err(source) => Err(io_err(&path, source)),
         }
     }
+
+    /// Reads retained `root/manifest.<version>`; `None` once it has been pruned (or was never
+    /// linked). A link whose decoded version differs is `Corrupt`.
+    pub fn load_version(&self, version: u64) -> Result<Option<Manifest>, Error> {
+        let path = self.versioned_path(version);
+        match self.io.read(&path) {
+            Ok(bytes) => {
+                let m = Manifest::decode(&path.display().to_string(), &bytes)?;
+                if m.version != version {
+                    return Err(Error::Corrupt {
+                        path: path.display().to_string(),
+                        detail: format!("names version {version} but decodes to {}", m.version),
+                    });
+                }
+                Ok(Some(m))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(io_err(&path, source)),
+        }
+    }
 }
 
 fn io_err(path: &std::path::Path, source: std::io::Error) -> Error {
@@ -214,6 +234,29 @@ mod tests {
             .collect();
         assert_eq!(present, vec![5, 6]);
         assert!(root.join(MANIFEST_FILE).exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn load_version_reads_a_retained_link_and_none_for_a_pruned_one() {
+        let root = temp_dir("publish-load-version");
+        std::fs::create_dir_all(&root).unwrap();
+        let publisher = Publisher::new(root.clone(), Io::real(), 3);
+
+        let mut versions = Vec::new();
+        for v in 1..=10u64 {
+            let mut m = Manifest::empty();
+            m.version = v;
+            publisher.publish(&m).unwrap();
+            versions.push(m);
+        }
+
+        // Retained: the last 3 (8, 9, 10), per `retention_keeps_only_the_last_n_versioned_links`.
+        assert_eq!(publisher.load_version(10).unwrap(), Some(versions[9].clone()));
+        assert_eq!(publisher.load_version(8).unwrap(), Some(versions[7].clone()));
+        // Pruned: falls outside the retained window.
+        assert_eq!(publisher.load_version(1).unwrap(), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -5,6 +5,7 @@ mod codec;
 mod commit;
 mod error;
 mod ids;
+mod ledger;
 mod lifecycle;
 mod publish;
 mod snapshot;
@@ -21,6 +22,7 @@ use crate::types::Value;
 pub use alter::{Alter, AlterPlan, explain, plan_alter, rewrites_segments};
 pub use commit::{Commit, Edit};
 pub use error::Error;
+pub use ledger::MigrationRecord;
 pub use lifecycle::{Job, RetireReason, Retired};
 pub use publish::{MANIFEST_FILE, Publisher};
 pub use snapshot::Snapshot;
@@ -217,6 +219,9 @@ pub struct Garbage {
     pub table: TableName,
     pub segment: SegmentEntry,
     pub removed_at_ms: u64,
+    /// The version whose commit released the segment; 0 on manifests written before it was
+    /// recorded, which retention then does not protect (SPEC §19 AT VERSION, D0014).
+    pub removed_at_version: u64,
 }
 
 /// One table's schema, engine, D0012 definition and live state.
@@ -313,6 +318,8 @@ pub struct Manifest {
     pub jobs: Vec<Job>,
     /// Entries kept for the grace period, in the order they were retired.
     pub retired: Vec<Retired>,
+    /// Applied migration files, in apply order.
+    pub migrations: Vec<MigrationRecord>,
 }
 
 impl Manifest {
@@ -326,6 +333,7 @@ impl Manifest {
             next_job_id: 1,
             jobs: Vec::new(),
             retired: Vec::new(),
+            migrations: Vec::new(),
         }
     }
 

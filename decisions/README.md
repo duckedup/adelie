@@ -18,3 +18,4 @@ rule, why it exists, and the evidence.
 | [D0011](0011-ledger-and-transactions-across-engines.md) | `ledger` is an engine in adelie; transactions span every engine |
 | [D0012](0012-stable-ids-and-rebuild-and-swap-migrations.md) | Stable table/field ids; engine, `KEY`, `VERSION` fixed; every migration is rebuild and swap |
 | [D0013](0013-migrations-as-built.md) | A migration builds a new table id and swaps it in by name; segment entries are views of shared files; the library API comes first |
+| [D0014](0014-backup-versions-and-the-migration-ledger.md) | A retained manifest version is readable, so GC keeps what it names; a backup is hard links plus one manifest; the migration ledger lives in the manifest |

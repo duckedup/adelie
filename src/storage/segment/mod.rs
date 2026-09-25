@@ -4,7 +4,7 @@ mod directory;
 pub mod encode;
 mod error;
 pub(crate) mod footer;
-mod hash;
+pub(crate) mod hash;
 mod idx;
 pub mod index;
 mod reader;

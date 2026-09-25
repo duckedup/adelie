@@ -1,5 +1,6 @@
 //! Garbage collection and orphan cleanup (SPEC §18, D0009). A garbage segment is deleted only
-//! once `gc_grace` has passed and no live in-process `Snapshot` still names it.
+//! once `gc_grace` has passed, no live in-process `Snapshot` still names it, and it fell out of
+//! the `retain_manifests` window (SPEC §19 AT VERSION, D0014).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -10,8 +11,9 @@ use crate::storage::manifest::{Edit, Manifest};
 use super::{Error, Shared, io_err, now_ms};
 
 /// First expires any retired table entry past `retain_definitions`, releasing its segments,
-/// then deletes every garbage segment old enough and unnamed by a live `Snapshot`, committing
-/// one `ForgetGarbage` for what it removed. Returns how many files were deleted.
+/// then deletes every garbage segment old enough, unnamed by a live `Snapshot`, and outside the
+/// `retain_manifests` window a retained `view_at` might still read, committing one
+/// `ForgetGarbage` for what it removed. Returns how many files were deleted.
 pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
     let now = now_ms();
     // Expired once its age reaches `retain_definitions` (`ExpireRetired` is strict, hence the
@@ -32,6 +34,7 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
 
     let manifest = shared.state.lock().unwrap().current.manifest().clone();
     let grace_ms = shared.opts.gc_grace.as_millis() as u64;
+    let retain = shared.opts.retain_manifests as u64;
 
     let live: Vec<Arc<crate::storage::manifest::Snapshot>> = {
         let mut live = shared.live.lock().unwrap();
@@ -42,6 +45,16 @@ pub(crate) fn run(shared: &Arc<Shared>) -> Result<usize, Error> {
     let mut removed_ids = Vec::new();
     for g in &manifest.garbage {
         if now.saturating_sub(g.removed_at_ms) < grace_ms {
+            continue;
+        }
+        // A retained manifest version is readable (SPEC §19 AT VERSION, D0014): anything it
+        // names that the current version doesn't was released after it, so keep garbage
+        // released inside the retain window. 0 = released before this was recorded, which
+        // retention does not protect. Saturating: the field is decoded from disk.
+        if retain > 0
+            && g.removed_at_version > 0
+            && g.removed_at_version.saturating_add(retain) > manifest.version + 1
+        {
             continue;
         }
         // The reference count is `release`'s job; this is defence in depth (D0012).
@@ -167,6 +180,7 @@ mod tests {
             compact_min_inputs: 2,
             compact_small_rows: 100,
             gc_grace: Duration::ZERO,
+            retain_manifests: 0,
             ..StoreOptions::default()
         };
         let store = Store::open(&dir, opts).unwrap();
@@ -206,6 +220,59 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// SPEC §19 AT VERSION, D0014: a retained manifest version can still read a segment
+    /// released after it, so gc must not delete one until it falls out of `retain_manifests`.
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn garbage_survives_gc_until_it_falls_out_of_the_retain_manifests_window() {
+        let dir = temp_dir("retain-window");
+        let opts = StoreOptions {
+            compact_min_inputs: 2,
+            compact_small_rows: 100,
+            gc_grace: Duration::ZERO,
+            retain_manifests: 3,
+            ..StoreOptions::default()
+        };
+        let store = Store::open(&dir, opts).unwrap();
+        let table = crate::storage::manifest::TableName::new("d", "t");
+        store
+            .create_table(TableSpec::new(table.clone(), schema()))
+            .unwrap();
+        store.write(&table, batch(1)).unwrap();
+        store.write(&table, batch(2)).unwrap();
+
+        // `table()`, not `snapshot()`: a clone, not a live `Snapshot`, so only retention (not
+        // the live-reference check) is under test.
+        let before = store.table(&table).unwrap();
+        let old_ids: Vec<u64> = before.segments.iter().map(|s| s.id).collect();
+        let seg_dir = crate::storage::manifest::Manifest::table_dir(&dir, &before.dir()).join("_");
+        let paths: Vec<PathBuf> = old_ids
+            .iter()
+            .map(|id| seg_dir.join(format!("{id:016x}.seg")))
+            .collect();
+
+        // `compact` releases the old segments and runs its own gc; still inside the window.
+        store.compact(&table).unwrap().unwrap();
+        assert!(
+            paths.iter().all(|p| p.exists()),
+            "a version still inside the retain window must be able to read the old segments"
+        );
+        assert_eq!(store.gc().unwrap(), 0);
+        assert!(paths.iter().all(|p| p.exists()));
+
+        // Two more commits, on a second table, push the release version out of the window.
+        let table2 = crate::storage::manifest::TableName::new("d", "t2");
+        store
+            .create_table(TableSpec::new(table2.clone(), schema()))
+            .unwrap();
+        store.write(&table2, batch(3)).unwrap();
+
+        let removed = store.gc().unwrap();
+        assert_eq!(removed, old_ids.len());
+        assert!(paths.iter().all(|p| !p.exists()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// D0012: a segment a live table and a retired entry both name must survive GC by that
     /// cross-table reference alone, not just by the table `gc.rs:30` used to check.
     #[test]
@@ -219,6 +286,7 @@ mod tests {
             // Long enough that `compact`'s own gc cannot expire the retired entry mid-test;
             // the test expires it explicitly below, at the point it means to.
             retain_definitions: Duration::from_secs(3600),
+            retain_manifests: 0,
             ..StoreOptions::default()
         };
         let store = Store::open(&dir, opts).unwrap();
