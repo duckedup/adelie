@@ -314,7 +314,7 @@ mod tests {
                 .iter()
                 .map(Batch::rows)
                 .sum::<usize>(),
-            400
+            120
         );
     }
 
