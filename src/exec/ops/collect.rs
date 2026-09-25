@@ -32,7 +32,10 @@ impl Sink for CollectSink {
         Ok(())
     }
 
-    fn merge(&mut self, ctx: &ExecContext, other: CollectSink) -> Result<(), ExecError> {
+    fn merge(&mut self, ctx: &ExecContext, mut other: CollectSink) -> Result<(), ExecError> {
+        // Release `other`'s bytes first: they are already counted against the shared budget, and
+        // re-pushing them while its reservation lives would count them twice (JoinBuildSink too).
+        drop(other.res.take());
         for batch in other.batches {
             self.push(ctx, batch)?;
         }
@@ -64,6 +67,25 @@ mod tests {
             vec![Column::from_values(&f.ty, &vals).unwrap()],
         )
         .unwrap()
+    }
+
+    /// Merging hands `other`'s bytes over: a budget of exactly what both partials hold is
+    /// enough. Counting them twice while re-pushing would need 1.5× that.
+    #[test]
+    fn merge_does_not_double_count_the_other_partials_reservation() {
+        let f = field("a", DataType::Int64);
+        let rows: Vec<i64> = (0..500).collect();
+        let held = 2 * int_batch(&f, &rows).byte_size();
+        let ctx = ExecContext::new(&crate::exec::ExecOptions {
+            memory_limit: held,
+            ..crate::exec::ExecOptions::default()
+        });
+        let mut a = CollectSink::new(vec![f.clone()]);
+        a.push(&ctx, int_batch(&f, &rows)).unwrap();
+        let mut b = CollectSink::new(vec![f.clone()]);
+        b.push(&ctx, int_batch(&f, &rows)).unwrap();
+        a.merge(&ctx, b).unwrap();
+        assert_eq!(ctx.memory_used(), held);
     }
 
     #[test]

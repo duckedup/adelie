@@ -55,8 +55,11 @@ impl Sink for TopKSink {
         self.fold_in(ctx, vec![batch])
     }
 
-    fn merge(&mut self, ctx: &ExecContext, other: TopKSink) -> Result<(), ExecError> {
+    fn merge(&mut self, ctx: &ExecContext, mut other: TopKSink) -> Result<(), ExecError> {
         ctx.check()?;
+        // Release `other`'s bytes first: they are already counted against the shared budget, and
+        // re-pushing them while its reservation lives would count them twice (JoinBuildSink too).
+        drop(other.res.take());
         self.fold_in(ctx, other.held)
     }
 

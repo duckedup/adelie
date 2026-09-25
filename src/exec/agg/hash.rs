@@ -174,8 +174,11 @@ impl Sink for HashAggregateSink {
         self.resize_reservation(ctx)
     }
 
-    fn merge(&mut self, ctx: &ExecContext, other: HashAggregateSink) -> Result<(), ExecError> {
+    fn merge(&mut self, ctx: &ExecContext, mut other: HashAggregateSink) -> Result<(), ExecError> {
         ctx.check()?;
+        // Release `other`'s bytes first: they are already counted against the shared budget, and
+        // re-pushing them while its reservation lives would count them twice (JoinBuildSink too).
+        drop(other.res.take());
         let other_groups = other.groups;
 
         // Rebuild `other`'s keys as columns so `encode_row_key` (FROZEN bytes) sees exactly
@@ -274,6 +277,38 @@ mod tests {
             Value::Null => None,
             other => panic!("expected Int64 or Null, got {other:?}"),
         }
+    }
+
+    /// Merging hands `other`'s bytes over rather than counting them twice. The budget is 1.25×
+    /// what two partials with disjoint groups hold before the merge. Double counting needs about
+    /// 1.5×, and a correct merge needs about 1×.
+    #[test]
+    fn merge_does_not_double_count_the_other_partials_reservation() {
+        let fields = vec![field("k", DataType::Int64), field("v", DataType::Int64)];
+        let aggs = vec![call(AggFunc::Sum, &[1], None, "s")];
+        let part = |base: i64| {
+            let keys: Vec<Option<i64>> = (0..200).map(|i| Some(base + i)).collect();
+            batch(fields.clone(), vec![int_col(&keys), int_col(&keys)])
+        };
+        let run = |ctx: &ExecContext| {
+            let mut a = HashAggregateSink::new(&fields, vec![0], aggs.clone()).unwrap();
+            let mut c = HashAggregateSink::new(&fields, vec![0], aggs.clone()).unwrap();
+            a.push(ctx, part(0)).unwrap();
+            c.push(ctx, part(1_000)).unwrap();
+            (a, c)
+        };
+        let probe = ExecContext::unlimited();
+        let held = {
+            let _parts = run(&probe);
+            probe.memory_used()
+        };
+        let ctx = ExecContext::new(&ExecOptions {
+            memory_limit: held + held / 4,
+            ..ExecOptions::default()
+        });
+        let (mut a, c) = run(&ctx);
+        a.merge(&ctx, c).unwrap();
+        assert_eq!(a.finish(&ctx).unwrap().iter().map(Batch::rows).sum::<usize>(), 400);
     }
 
     /// Sorts `(group_key, count, sum)` rows so a merged and an unmerged run compare equal

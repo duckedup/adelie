@@ -34,7 +34,10 @@ impl Sink for SortSink {
         Ok(())
     }
 
-    fn merge(&mut self, ctx: &ExecContext, other: SortSink) -> Result<(), ExecError> {
+    fn merge(&mut self, ctx: &ExecContext, mut other: SortSink) -> Result<(), ExecError> {
+        // Release `other`'s bytes first: they are already counted against the shared budget, and
+        // re-pushing them while its reservation lives would count them twice (JoinBuildSink too).
+        drop(other.res.take());
         for batch in other.batches {
             self.push(ctx, batch)?;
         }
