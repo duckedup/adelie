@@ -2,8 +2,6 @@
 //! wires up. `basic`/`collect`/`sketch` supply the concrete accumulators (U3/U4); `hash.rs`
 //! (U9) is the `GroupsAccumulator`-driven hash-aggregate `Sink`.
 
-#![allow(dead_code)] // until adelie-1st U11 drives HashAggregateSink from execute.rs
-
 mod basic;
 mod collect;
 mod hash;

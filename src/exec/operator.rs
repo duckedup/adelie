@@ -1,7 +1,5 @@
 //! Operator, sink and source traits every exec stage implements (SPEC §7).
 
-#![allow(dead_code)] // Operator/Sink: until adelie-1st U5 (ops) and U7 (pipeline) implement them
-
 use super::context::{ExecContext, ExecError};
 use super::expr::Expr;
 use super::{Batch, Field};

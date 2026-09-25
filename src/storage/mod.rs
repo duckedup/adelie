@@ -15,6 +15,7 @@ mod lock;
 pub mod manifest;
 mod migrate;
 mod prune;
+mod query;
 mod read;
 mod scan;
 pub mod segment;
