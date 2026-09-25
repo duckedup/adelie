@@ -4,6 +4,7 @@
 mod datatype;
 mod fit;
 mod order;
+mod parse;
 mod text;
 mod value;
 

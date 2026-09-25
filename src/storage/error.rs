@@ -54,6 +54,9 @@ pub enum Error {
         name: String,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// A query (`View::scan`/`View::query`) failed in the executor rather than in storage
+    /// itself.
+    Exec(crate::exec::ExecError),
 }
 
 impl fmt::Display for Error {
@@ -94,6 +97,7 @@ impl fmt::Display for Error {
                 write!(f, "migration {name}: {detail}")
             }
             Error::MigrationFailed { name, source } => write!(f, "migration {name}: {source}"),
+            Error::Exec(e) => write!(f, "query: {e}"),
         }
     }
 }
@@ -109,6 +113,12 @@ impl From<manifest::Error> for Error {
 impl From<segment::Error> for Error {
     fn from(e: segment::Error) -> Self {
         Error::Segment(e)
+    }
+}
+
+impl From<crate::exec::ExecError> for Error {
+    fn from(e: crate::exec::ExecError) -> Self {
+        Error::Exec(e)
     }
 }
 
