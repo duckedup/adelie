@@ -889,7 +889,7 @@ impl CrashTarget for LifecycleTarget {
     /// Even batches: `backup_to` a fresh sibling dir. Odd batches: write and apply one more
     /// migration file. Both live outside the store dir (see `sibling_migrations_dir`).
     fn between(target: &mut LifecycleStore, batch: u64) -> io::Result<()> {
-        if batch % 2 == 0 {
+        if batch.is_multiple_of(2) {
             let name = target
                 .dir
                 .file_name()
