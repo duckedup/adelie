@@ -6,8 +6,8 @@ use crate::types::{DataType, Value, coerce};
 use super::alter;
 use super::error::Error;
 use super::{
-    Alter, FieldId, Garbage, Job, Manifest, PartitionBy, Predicate, RetireReason, Retired,
-    SchemaField, SegmentEntry, TableEntry, TableId, TableName, TableSpec, Tombstone, Ttl,
+    Alter, FieldId, Garbage, Job, Manifest, MigrationRecord, PartitionBy, Predicate, RetireReason,
+    Retired, SchemaField, SegmentEntry, TableEntry, TableId, TableName, TableSpec, Tombstone, Ttl,
 };
 
 /// One change to a `Manifest`. `Commit::apply` applies a list of these in order.
@@ -80,6 +80,12 @@ pub enum Edit {
     ExpireRetired {
         before_ms: u64,
     },
+    /// Records one applied migration file; `applied_at_ms` is the commit's `now_ms`. A name
+    /// already recorded is `Error::MigrationRecorded`.
+    RecordMigration {
+        name: String,
+        checksum: u64,
+    },
 }
 
 /// A batch of edits applied together against a recorded `base` version. `base` is kept for
@@ -91,22 +97,25 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// OCC check and apply: returns the next manifest, `version = current.version + 1`.
+    /// OCC check and apply: returns the next manifest, `version = current.version + 1`. That
+    /// next version is threaded into every edit as the version its commit lands at, without
+    /// bumping `next.version` itself until every edit has read `m.version` as the base.
     pub fn apply(&self, current: &Manifest, now_ms: u64) -> Result<Manifest, Error> {
         let mut next = current.clone();
+        let version = current.version + 1;
         for edit in &self.edits {
-            apply_edit(&mut next, edit, now_ms)?;
+            apply_edit(&mut next, edit, version, now_ms)?;
         }
-        next.version = current.version + 1;
+        next.version = version;
         Ok(next)
     }
 }
 
-fn apply_edit(m: &mut Manifest, edit: &Edit, now_ms: u64) -> Result<(), Error> {
+fn apply_edit(m: &mut Manifest, edit: &Edit, version: u64, now_ms: u64) -> Result<(), Error> {
     match edit {
         Edit::CreateTable { spec } => create_table(m, spec),
         Edit::AddSegments { table, segments } => add_segments(m, table, segments),
-        Edit::RemoveSegments { table, ids } => remove_segments(m, table, ids, now_ms),
+        Edit::RemoveSegments { table, ids } => remove_segments(m, table, ids, version, now_ms),
         Edit::AddTombstone { table, predicates } => add_tombstone(m, table, predicates),
         Edit::ForgetGarbage { ids } => {
             forget_garbage(m, ids);
@@ -123,16 +132,17 @@ fn apply_edit(m: &mut Manifest, edit: &Edit, now_ms: u64) -> Result<(), Error> {
             rewritten,
             segments,
         } => advance_job(m, *job, reused, rewritten, segments),
-        Edit::SwapJob { job } => swap_job(m, *job, now_ms),
-        Edit::CancelJob { job } => cancel_job(m, *job, now_ms),
-        Edit::RevertTable { table } => revert_table(m, table, now_ms),
-        Edit::DropTable { table } => drop_table(m, table, now_ms),
+        Edit::SwapJob { job } => swap_job(m, *job, version, now_ms),
+        Edit::CancelJob { job } => cancel_job(m, *job, version, now_ms),
+        Edit::RevertTable { table } => revert_table(m, table, version, now_ms),
+        Edit::DropTable { table } => drop_table(m, table, version, now_ms),
         Edit::UndropTable { table } => undrop_table(m, table),
-        Edit::TruncateTable { table } => truncate_table(m, table, now_ms),
+        Edit::TruncateTable { table } => truncate_table(m, table, version, now_ms),
         Edit::ExpireRetired { before_ms } => {
-            expire_retired(m, *before_ms, now_ms);
+            expire_retired(m, *before_ms, version, now_ms);
             Ok(())
         }
+        Edit::RecordMigration { name, checksum } => record_migration(m, name, *checksum, now_ms),
     }
 }
 
@@ -276,6 +286,7 @@ fn remove_segments(
     m: &mut Manifest,
     table: &TableName,
     ids: &[u64],
+    version: u64,
     now_ms: u64,
 ) -> Result<(), Error> {
     let idx = table_index(m, table)?;
@@ -304,13 +315,20 @@ fn remove_segments(
             true
         }
     });
-    release(m, table, removed, now_ms);
+    release(m, table, removed, version, now_ms);
     Ok(())
 }
 
 /// Moves each segment to garbage unless something still references it (D0012: a reused
 /// segment is shared by a swapped table and the one kept for REVERT) or it is already there.
-fn release(m: &mut Manifest, table: &TableName, segments: Vec<SegmentEntry>, now_ms: u64) {
+/// `version` is the version this release's commit lands at (SPEC §19 AT VERSION, D0014).
+fn release(
+    m: &mut Manifest,
+    table: &TableName,
+    segments: Vec<SegmentEntry>,
+    version: u64,
+    now_ms: u64,
+) {
     for mut segment in segments {
         if m.references_segment(segment.id) || m.garbage.iter().any(|g| g.segment.id == segment.id)
         {
@@ -323,6 +341,7 @@ fn release(m: &mut Manifest, table: &TableName, segments: Vec<SegmentEntry>, now
             table: table.clone(),
             segment,
             removed_at_ms: now_ms,
+            removed_at_version: version,
         });
     }
 }
@@ -420,7 +439,7 @@ fn advance_job(
     Ok(())
 }
 
-fn swap_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
+fn swap_job(m: &mut Manifest, job_id: u64, version: u64, now_ms: u64) -> Result<(), Error> {
     let job_idx = m
         .jobs
         .iter()
@@ -493,7 +512,7 @@ fn swap_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
         entry: source,
         reason: RetireReason::Swapped,
         retired_at_ms: now_ms,
-        version: m.version + 1,
+        version,
         successor_segments,
     });
 
@@ -502,7 +521,7 @@ fn swap_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
     Ok(())
 }
 
-fn cancel_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
+fn cancel_job(m: &mut Manifest, job_id: u64, version: u64, now_ms: u64) -> Result<(), Error> {
     let job_idx = m
         .jobs
         .iter()
@@ -510,11 +529,16 @@ fn cancel_job(m: &mut Manifest, job_id: u64, now_ms: u64) -> Result<(), Error> {
         .ok_or(Error::NoSuchJob { job: job_id })?;
     let job = m.jobs.remove(job_idx);
     let table = job.target.name.clone();
-    release(m, &table, job.target.segments, now_ms);
+    release(m, &table, job.target.segments, version, now_ms);
     Ok(())
 }
 
-fn revert_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+fn revert_table(
+    m: &mut Manifest,
+    table: &TableName,
+    version: u64,
+    now_ms: u64,
+) -> Result<(), Error> {
     let r_idx = m
         .retired
         .iter()
@@ -606,7 +630,7 @@ fn revert_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), 
         entry: cur,
         reason: RetireReason::Reverted,
         retired_at_ms: now_ms,
-        version: m.version + 1,
+        version,
         successor_segments: Vec::new(),
     });
 
@@ -615,7 +639,7 @@ fn revert_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), 
     Ok(())
 }
 
-fn drop_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+fn drop_table(m: &mut Manifest, table: &TableName, version: u64, now_ms: u64) -> Result<(), Error> {
     let idx = table_index(m, table)?;
     if let Some(job) = m.job_for(table) {
         return Err(Error::JobRunning {
@@ -628,7 +652,7 @@ fn drop_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Er
         entry,
         reason: RetireReason::Dropped,
         retired_at_ms: now_ms,
-        version: m.version + 1,
+        version,
         successor_segments: Vec::new(),
     });
     Ok(())
@@ -654,7 +678,12 @@ fn undrop_table(m: &mut Manifest, table: &TableName) -> Result<(), Error> {
     Ok(())
 }
 
-fn truncate_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<(), Error> {
+fn truncate_table(
+    m: &mut Manifest,
+    table: &TableName,
+    version: u64,
+    now_ms: u64,
+) -> Result<(), Error> {
     let idx = table_index(m, table)?;
     if let Some(job) = m.job_for(table) {
         return Err(Error::JobRunning {
@@ -664,11 +693,11 @@ fn truncate_table(m: &mut Manifest, table: &TableName, now_ms: u64) -> Result<()
     }
     let segments = std::mem::take(&mut m.tables[idx].segments);
     m.tables[idx].tombstones.clear();
-    release(m, table, segments, now_ms);
+    release(m, table, segments, version, now_ms);
     Ok(())
 }
 
-fn expire_retired(m: &mut Manifest, before_ms: u64, now_ms: u64) {
+fn expire_retired(m: &mut Manifest, before_ms: u64, version: u64, now_ms: u64) {
     let expired: Vec<Retired> = {
         let mut kept = Vec::with_capacity(m.retired.len());
         let mut expired = Vec::new();
@@ -683,7 +712,7 @@ fn expire_retired(m: &mut Manifest, before_ms: u64, now_ms: u64) {
         expired
     };
     for r in expired {
-        release(m, &r.entry.name, r.entry.segments, now_ms);
+        release(m, &r.entry.name, r.entry.segments, version, now_ms);
     }
 }
 
@@ -768,6 +797,21 @@ fn forget_garbage(m: &mut Manifest, ids: &[u64]) {
 
 fn reserve_segment_ids(m: &mut Manifest, next: u64) {
     m.next_segment_id = m.next_segment_id.max(next);
+}
+
+/// Appends `name` to the migration ledger; `applied_at_ms` is the commit's `now_ms`.
+fn record_migration(m: &mut Manifest, name: &str, checksum: u64, now_ms: u64) -> Result<(), Error> {
+    if m.migrations.iter().any(|r| r.name == name) {
+        return Err(Error::MigrationRecorded {
+            name: name.to_string(),
+        });
+    }
+    m.migrations.push(MigrationRecord {
+        name: name.to_string(),
+        checksum,
+        applied_at_ms: now_ms,
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1065,6 +1109,9 @@ mod tests {
         );
         assert_eq!(next.garbage.len(), 1);
         assert_eq!(next.garbage[0].removed_at_ms, 4242);
+        // base was 2, so the commit landed at 3: not 0, and not the base itself.
+        assert_eq!(m.version, 2);
+        assert_eq!(next.garbage[0].removed_at_version, 3);
         assert!(next.garbage[0].segment.columns.is_empty());
         assert!(next.garbage[0].segment.field_ids.is_empty());
         assert_eq!(next.garbage[0].segment.dir, dir);
@@ -2043,6 +2090,7 @@ mod tests {
         .apply(&m, 0)
         .unwrap();
 
+        let base = m.version;
         let m = Commit {
             base: m.version,
             edits: vec![Edit::TruncateTable {
@@ -2059,5 +2107,42 @@ mod tests {
         assert_eq!(t.schema.iter().map(|f| f.id).collect::<Vec<_>>(), field_ids);
         assert_eq!(m.garbage.len(), 1);
         assert_eq!(m.garbage[0].removed_at_ms, 42);
+        // base was >= 2, so a stamp of 0 or of base itself would be wrong.
+        assert!(base >= 2);
+        assert_eq!(m.garbage[0].removed_at_version, base + 1);
+    }
+
+    // ── migration ledger (SPEC §19, D0014) ──────────────────────────────
+
+    #[test]
+    fn record_migration_appends_with_applied_at_ms_and_rejects_a_duplicate_name() {
+        let m = base_with_table();
+        let m = Commit {
+            base: m.version,
+            edits: vec![Edit::RecordMigration {
+                name: "0001_init.sql".to_string(),
+                checksum: 0xabcd,
+            }],
+        }
+        .apply(&m, 555)
+        .unwrap();
+        assert_eq!(m.migrations.len(), 1);
+        assert_eq!(m.migrations[0].name, "0001_init.sql");
+        assert_eq!(m.migrations[0].checksum, 0xabcd);
+        assert_eq!(m.migrations[0].applied_at_ms, 555);
+
+        let dup = Commit {
+            base: m.version,
+            edits: vec![Edit::RecordMigration {
+                name: "0001_init.sql".to_string(),
+                checksum: 0xffff,
+            }],
+        };
+        match dup.apply(&m, 999) {
+            Err(Error::MigrationRecorded { name }) => assert_eq!(name, "0001_init.sql"),
+            other => panic!("expected MigrationRecorded, got {other:?}"),
+        }
+        // The manifest is unchanged: still exactly the one migration recorded above.
+        assert_eq!(m.migrations.len(), 1);
     }
 }

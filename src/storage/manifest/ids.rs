@@ -127,6 +127,7 @@ mod tests {
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![],
         };
         m.tables[0]
             .segments
@@ -150,6 +151,7 @@ mod tests {
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![],
         };
         assign_missing(&mut m);
         assert_eq!(m.tables[0].id, TableId(4));
@@ -169,10 +171,12 @@ mod tests {
                 table: TableName::new("d", "a"),
                 segment: seg(9, "", 0, vec![]),
                 removed_at_ms: 1,
+                removed_at_version: 1,
             }],
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![],
         };
         m.tables[0].segments.push(seg(1, "", 1, vec![]));
         let mut once = m.clone();

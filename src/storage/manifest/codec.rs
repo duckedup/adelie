@@ -1,4 +1,4 @@
-//! Manifest v1 codec (SPEC §5, §18, §19, D0009, D0012, D0013): `ADLMAN` header, four
+//! Manifest v1 codec (SPEC §5, §18, §19, D0009, D0012, D0013, D0014): `ADLMAN` header, five
 //! length-prefixed body records, then the segment format's own CRC32C trailer framing. Every
 //! record is length-prefixed, so a reader ignores fields it doesn't know and new fields are
 //! additive.
@@ -14,8 +14,8 @@ use crate::types::DataType;
 use super::error::Error;
 use super::lifecycle::{Job, RetireReason, Retired};
 use super::{
-    CmpOp, FieldId, Garbage, Manifest, PartitionBy, Predicate, SchemaField, SegmentEntry, SideFile,
-    TableEntry, TableId, TableName, Tombstone, Ttl, is_path_component,
+    CmpOp, FieldId, Garbage, Manifest, MigrationRecord, PartitionBy, Predicate, SchemaField,
+    SegmentEntry, SideFile, TableEntry, TableId, TableName, Tombstone, Ttl, is_path_component,
 };
 
 const MANIFEST_MAGIC: [u8; 6] = *b"ADLMAN";
@@ -42,6 +42,7 @@ fn encode_body(m: &Manifest) -> Vec<u8> {
     body.record(|r| encode_tables(m, r));
     body.record(|r| encode_garbage(m, r));
     body.record(|r| encode_lifecycle(m, r));
+    body.record(|r| encode_migrations(m, r));
     body.into_vec()
 }
 
@@ -75,6 +76,11 @@ fn decode_body(path: &str, body: &[u8]) -> Result<Manifest, Error> {
     } else {
         decode_lifecycle(&mut cur, path)?
     };
+    let migrations = if cur.is_empty() {
+        vec![]
+    } else {
+        decode_migrations(&mut cur, path)?
+    };
     Ok(Manifest {
         version,
         next_segment_id,
@@ -84,6 +90,7 @@ fn decode_body(path: &str, body: &[u8]) -> Result<Manifest, Error> {
         next_job_id,
         jobs,
         retired,
+        migrations,
     })
 }
 
@@ -729,6 +736,7 @@ fn encode_garbage(m: &Manifest, out: &mut Sink) {
             // No schema is available for a garbage entry's own table, so it carries no column
             // stats: id, partition, seq, rows and dir are all a garbage-collector needs.
             r.record(|sr| encode_segment(&g.segment, &[], sr));
+            r.uvarint(g.removed_at_version);
         });
     }
 }
@@ -746,10 +754,18 @@ fn decode_garbage(cur: &mut Cursor, path: &str) -> Result<Vec<Garbage>, Error> {
         check_component(path, &name)?;
         let removed_at_ms = gr.uvarint().map_err(|e| corrupt(path, e))?;
         let segment = decode_segment(&mut gr, &[], path)?;
+        // Additive (D0009): a manifest written before this field carries none, and never
+        // protects that garbage from retention (SPEC §19 AT VERSION, D0014).
+        let removed_at_version = if gr.is_empty() {
+            0
+        } else {
+            gr.uvarint().map_err(|e| corrupt(path, e))?
+        };
         out.push(Garbage {
             table: TableName::new(db, name),
             segment,
             removed_at_ms,
+            removed_at_version,
         });
     }
     Ok(out)
@@ -882,6 +898,38 @@ fn decode_u64_list(cur: &mut Cursor, path: &str) -> Result<Vec<u64>, Error> {
     Ok(out)
 }
 
+// ── migrations: the versioned-migration ledger (SPEC §19, D0014) ──
+
+fn encode_migrations(m: &Manifest, out: &mut Sink) {
+    out.uvarint(m.migrations.len() as u64);
+    for r in &m.migrations {
+        out.record(|rr| {
+            rr.str(&r.name);
+            rr.u64(r.checksum);
+            rr.uvarint(r.applied_at_ms);
+        });
+    }
+}
+
+fn decode_migrations(cur: &mut Cursor, path: &str) -> Result<Vec<MigrationRecord>, Error> {
+    let mut body = cur.record().map_err(|e| corrupt(path, e))?;
+    let n = body.uvarint().map_err(|e| corrupt(path, e))?;
+    let n = body.guard_len(n, 1).map_err(|e| corrupt(path, e))?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut rr = body.record().map_err(|e| corrupt(path, e))?;
+        let name = rr.str().map_err(|e| corrupt(path, e))?.to_string();
+        let checksum = rr.u64().map_err(|e| corrupt(path, e))?;
+        let applied_at_ms = rr.uvarint().map_err(|e| corrupt(path, e))?;
+        out.push(MigrationRecord {
+            name,
+            checksum,
+            applied_at_ms,
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
     let mut body = Sink::new();
@@ -901,6 +949,8 @@ pub(crate) fn encode_with_extra_segment_field(m: &Manifest) -> Vec<u8> {
         }
     });
     body.record(|r| encode_garbage(m, r));
+    body.record(|r| encode_lifecycle(m, r));
+    body.record(|r| encode_migrations(m, r));
     let body = body.into_vec();
 
     let mut out =
@@ -1355,10 +1405,23 @@ mod tests {
                     file_field_ids: Vec::new(),
                 },
                 removed_at_ms: 42,
+                removed_at_version: 2,
             }],
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![
+                MigrationRecord {
+                    name: "0001_init.sql".to_string(),
+                    checksum: 0xdead_beef,
+                    applied_at_ms: 100,
+                },
+                MigrationRecord {
+                    name: "0002_add_index.sql".to_string(),
+                    checksum: 0xfeed_face,
+                    applied_at_ms: 200,
+                },
+            ],
         }
     }
 
@@ -1558,6 +1621,7 @@ mod tests {
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![],
         }
     }
 
@@ -1648,12 +1712,19 @@ mod tests {
         }
     }
 
-    fn without_file_field_ids(mut m: Manifest) -> Manifest {
+    /// Strips whatever the pre-lifecycle format (no 4th or 5th body record, old garbage
+    /// segment layout) cannot carry: `file_field_ids`, garbage's `removed_at_version`, and the
+    /// migration ledger.
+    fn without_lifecycle_fields(mut m: Manifest) -> Manifest {
         for t in m.tables.iter_mut() {
             for s in t.segments.iter_mut() {
                 s.file_field_ids = Vec::new();
             }
         }
+        for g in m.garbage.iter_mut() {
+            g.removed_at_version = 0;
+        }
+        m.migrations = Vec::new();
         m
     }
 
@@ -1721,15 +1792,25 @@ mod tests {
 
     #[test]
     fn pre_lifecycle_bytes_decode_with_empty_jobs_and_retired() {
-        // The old segment record can't carry `file_field_ids`, so a manifest that has any must
-        // be normalized before comparing against what the pre-lifecycle bytes decode to.
-        let want = without_file_field_ids(sample_manifest());
+        // sample_manifest's garbage and migrations are non-trivial, so a decode that zeroed
+        // them by accident (rather than by the old bytes truly lacking them) would still show.
+        assert_ne!(sample_manifest().garbage[0].removed_at_version, 0);
+        assert!(!sample_manifest().migrations.is_empty());
+
+        // The old segment record can't carry `file_field_ids`, `removed_at_version` or the
+        // migration ledger, so a manifest that has any must be normalized before comparing
+        // against what the pre-lifecycle bytes decode to.
+        let want = without_lifecycle_fields(sample_manifest());
         let bytes = encode_pre_lifecycle(&want);
 
+        // No migrations record and no garbage trailing field at all: the bytes stop right
+        // after the (old-format) garbage record.
         let plain = decode("m", &bytes).unwrap();
         assert_eq!(plain.next_job_id, 1);
         assert!(plain.jobs.is_empty());
         assert!(plain.retired.is_empty());
+        assert!(plain.migrations.is_empty());
+        assert!(plain.garbage.iter().all(|g| g.removed_at_version == 0));
         for t in &plain.tables {
             for s in &t.segments {
                 assert!(s.file_field_ids.is_empty());

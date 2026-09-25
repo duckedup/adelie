@@ -17,6 +17,9 @@ fn opts() -> StoreOptions {
         flush_interval: Duration::from_millis(5),
         gc_grace: Duration::ZERO,
         compact_min_inputs: 2,
+        // This suite asserts `gc()` frees files right away; the AT VERSION retain window
+        // would otherwise keep them around.
+        retain_manifests: 0,
         ..Default::default()
     }
 }
@@ -465,6 +468,9 @@ fn compaction_is_safe_for_live_readers() {
         StoreOptions {
             gc_grace: Duration::ZERO,
             compact_min_inputs: 2,
+            // Asserts `gc()` frees the compacted-away files right away; the AT VERSION retain
+            // window would otherwise keep them around.
+            retain_manifests: 0,
             ..StoreOptions::default()
         },
     )

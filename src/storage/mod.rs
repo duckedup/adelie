@@ -1,6 +1,7 @@
 //! Storage (SPEC §5, §6, §14, §18, D0009): the store, with the segment format, the manifest and
 //! the table engines beneath it.
 
+mod backup;
 mod buffer;
 mod compact;
 pub mod engines;
@@ -9,6 +10,7 @@ mod fail;
 mod flush;
 mod gc;
 mod io;
+mod ledger;
 mod lock;
 pub mod manifest;
 mod migrate;
@@ -33,7 +35,8 @@ use buffer::{FlushTicket, should_flush};
 
 pub use engines::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
 pub use error::Error;
-pub use manifest::{Alter, AlterPlan, Job, RetireReason, Retired, TableSpec};
+pub use ledger::{MigrateMode, PendingMigration};
+pub use manifest::{Alter, AlterPlan, Job, MigrationRecord, RetireReason, Retired, TableSpec};
 pub use migrate::JobStatus;
 
 /// `Store::open` defaults and the compaction/GC policy (SPEC §6, §18).
@@ -84,6 +87,9 @@ struct Shared {
     commit: Mutex<()>,
     /// In-process readers, consulted by `gc` before deleting a compacted-away file.
     live: Mutex<Vec<Weak<Snapshot>>>,
+    /// Serialises `apply_migrations`, so two in-process callers never both run a file neither
+    /// has recorded yet. Another process can't reach this store: it holds `dir/lock`.
+    ledger: Mutex<()>,
     next_id: AtomicU64,
 }
 
@@ -168,6 +174,36 @@ pub(crate) fn io_err(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
+/// Resolves `version` against `current` and, if it's older, `publisher`'s retained link:
+/// shared by `Store::view_at` and `Reader::view_at`. A `version` newer than `current`, or whose
+/// link was pruned past `retain_manifests`, is `Error::VersionNotRetained`.
+fn resolve_version(
+    publisher: &Publisher,
+    current: &Arc<Snapshot>,
+    version: u64,
+) -> Result<Arc<Snapshot>, Error> {
+    let cur = current.version();
+    if version == cur {
+        return Ok(current.clone());
+    }
+    if version > cur {
+        return Err(Error::VersionNotRetained {
+            version,
+            current: cur,
+        });
+    }
+    let manifest = publisher
+        .load_version(version)?
+        .ok_or(Error::VersionNotRetained {
+            version,
+            current: cur,
+        })?;
+    Ok(Arc::new(Snapshot::new(
+        current.root().to_path_buf(),
+        manifest,
+    )))
+}
+
 /// The store: the single writer process for `dir` (SPEC §6). `Send + Sync`.
 pub struct Store {
     shared: Arc<Shared>,
@@ -232,6 +268,7 @@ impl Store {
             wake: Condvar::new(),
             commit: Mutex::new(()),
             live: Mutex::new(Vec::new()),
+            ledger: Mutex::new(()),
             next_id,
         });
         let flusher = flush::spawn(shared.clone());
@@ -578,6 +615,60 @@ impl Store {
         }
     }
 
+    /// Reads `version`'s manifest exactly as it was at that commit (SPEC §19 AT VERSION,
+    /// D0014): the current version, or one still retained by `retain_manifests`. `buffered` is
+    /// empty — a version read is exactly that published version. Registered in `shared.live`
+    /// like `snapshot()`, so a held view also holds gc off its files.
+    pub fn view_at(&self, version: u64) -> Result<View, Error> {
+        // Held from reading `current` through registering, as in `snapshot()`: a gc that reads
+        // a newer `current` than ours also sees us in `live`, so it cannot delete what this
+        // view names between the resolve and the registration. The resolve reads one small
+        // manifest file under the lock.
+        let state = self.shared.state.lock().unwrap();
+        let snapshot = resolve_version(&self.shared.publisher, &state.current, version)?;
+        {
+            let mut live = self.shared.live.lock().unwrap();
+            live.retain(|w| w.strong_count() > 0);
+            live.push(Arc::downgrade(&snapshot));
+        }
+        drop(state);
+        Ok(View {
+            snapshot,
+            buffered: BTreeMap::new(),
+        })
+    }
+
+    /// Flushes, then hard-links every live segment into a fresh copy of the store (SPEC §19,
+    /// D0014). Returns the backed-up version.
+    pub fn backup_to(&self, dir: impl AsRef<Path>) -> Result<u64, Error> {
+        backup::backup_to(self, dir.as_ref())
+    }
+
+    /// Applies every `.sql` file in `dir` not yet recorded (SPEC §19 `adelie migrate`, D0014).
+    pub fn apply_migrations<E>(
+        &self,
+        dir: impl AsRef<Path>,
+        mode: MigrateMode,
+        exec: impl FnMut(&PendingMigration) -> Result<(), E>,
+    ) -> Result<Vec<PendingMigration>, Error>
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        ledger::apply_migrations(self, dir.as_ref(), mode, exec)
+    }
+
+    /// Every migration file applied so far, in apply order.
+    pub fn migrations(&self) -> Vec<MigrationRecord> {
+        self.shared
+            .state
+            .lock()
+            .unwrap()
+            .current
+            .manifest()
+            .migrations
+            .clone()
+    }
+
     pub fn close(mut self) -> Result<(), Error> {
         self.close_internal()
     }
@@ -643,6 +734,18 @@ impl Reader {
         let manifest = self.publisher.load()?;
         Ok(View {
             snapshot: Arc::new(Snapshot::new(self.root.clone(), manifest)),
+            buffered: BTreeMap::new(),
+        })
+    }
+
+    /// Like `snapshot`, but for a specific past `version` (SPEC §19 AT VERSION, D0014). Never
+    /// registered live: the guarantee is the writer's own gc and its `retain_manifests`, not
+    /// anything this reader does (`snapshot`'s doc above).
+    pub fn view_at(&self, version: u64) -> Result<View, Error> {
+        let current = Arc::new(Snapshot::new(self.root.clone(), self.publisher.load()?));
+        let snapshot = resolve_version(&self.publisher, &current, version)?;
+        Ok(View {
+            snapshot,
             buffered: BTreeMap::new(),
         })
     }
@@ -898,6 +1001,7 @@ mod tests {
             next_job_id: 1,
             jobs: vec![],
             retired: vec![],
+            migrations: vec![],
         };
         Publisher::new(dir.clone(), Io::real(), 8)
             .publish(&m)
@@ -975,6 +1079,48 @@ mod tests {
         ));
         assert!(Reader::open(&dir).is_ok());
         drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn view_at_reads_a_retained_version_and_rejects_a_pruned_or_future_one() {
+        let dir = temp_dir("view-at");
+        let opts = StoreOptions {
+            retain_manifests: 2,
+            flush_interval: Duration::from_millis(10),
+            ..StoreOptions::default()
+        };
+        let store = open(&dir, opts);
+        let v1 = store.snapshot().version(); // just `create_table`
+        store.write(&table(), batch(0, 1)).unwrap();
+        let v2 = store.snapshot().version();
+        store.write(&table(), batch(1, 1)).unwrap();
+        let current = store.snapshot().version();
+
+        // Still inside the retain window: reads exactly what was live at `v2`, not `current`.
+        let past = store.view_at(v2).unwrap();
+        assert_eq!(past.version(), v2);
+        let rows: usize = past.scan(&table()).unwrap().iter().map(Batch::rows).sum();
+        assert_eq!(rows, 1);
+
+        // `current` itself, and a version newer than it, resolve without a publisher read.
+        assert_eq!(store.view_at(current).unwrap().version(), current);
+        let future = store.view_at(current + 1).err().unwrap();
+        assert!(matches!(
+            future,
+            Error::VersionNotRetained { version, current: c }
+                if version == current + 1 && c == current
+        ));
+
+        // Pruned past the 2-version retain window.
+        assert!(matches!(
+            store.view_at(v1),
+            Err(Error::VersionNotRetained { version, .. }) if version == v1
+        ));
+
+        let reader = Reader::open(&dir).unwrap();
+        assert_eq!(reader.view_at(v2).unwrap().version(), v2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
