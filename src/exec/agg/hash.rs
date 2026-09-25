@@ -287,7 +287,7 @@ mod tests {
         let fields = vec![field("k", DataType::Int64), field("v", DataType::Int64)];
         let aggs = vec![call(AggFunc::Sum, &[1], None, "s")];
         let part = |base: i64| {
-            let keys: Vec<Option<i64>> = (0..60).map(|i| Some(base + i)).collect();
+            let keys: Vec<Option<i64>> = (0..200).map(|i| Some(base + i)).collect();
             batch(fields.clone(), vec![int_col(&keys), int_col(&keys)])
         };
         let run = |ctx: &ExecContext| {
@@ -314,7 +314,7 @@ mod tests {
                 .iter()
                 .map(Batch::rows)
                 .sum::<usize>(),
-            120
+            400
         );
     }
 
