@@ -137,7 +137,7 @@ fn float_to_decimal(f: f64, dt: DecimalType) -> Option<Value> {
     if !f.is_finite() {
         return None;
     }
-    let rounded = (f * 10f64.powi(dt.scale() as i32)).round();
+    let rounded = (f * pow10(dt.scale()) as f64).round();
     let limit = pow10(dt.precision()) as f64;
     if !(-limit..limit).contains(&rounded) {
         return None;

@@ -102,7 +102,8 @@ fn estimate_dense(regs: &[u8; REGISTERS]) -> f64 {
     let mut sum = 0f64;
     let mut zeros = 0u32;
     for &r in regs.iter() {
-        sum += 2f64.powi(-(r as i32));
+        // 2^-r built exactly (r <= 51): `powi` is not exact everywhere, and Miri perturbs it.
+        sum += 1.0 / (1u64 << r) as f64;
         if r == 0 {
             zeros += 1;
         }

@@ -26,7 +26,7 @@ fn value_of(key: i32, gamma: f64) -> f64 {
 
 /// `unscaled / 10^scale`, the only place DECIMAL loses precision on the way into the sketch.
 fn decimal_to_f64(d: Decimal) -> f64 {
-    d.unscaled() as f64 / 10f64.powi(d.scale() as i32)
+    d.unscaled() as f64 / crate::types::pow10(d.scale()) as f64
 }
 
 /// NULL and NaN both fold to "skip this row"; the type match mirrors `new`'s accepted set.

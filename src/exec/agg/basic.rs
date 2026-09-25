@@ -461,7 +461,7 @@ impl GroupsAccumulator for AvgAccumulator {
                 let avg = match this.kind {
                     AvgKind::Float64 => this.float_sum[g] / count as f64,
                     AvgKind::Decimal(scale) => {
-                        (this.int_sum[g] as f64) / 10f64.powi(scale as i32) / count as f64
+                        (this.int_sum[g] as f64) / crate::types::pow10(scale) as f64 / count as f64
                     }
                     AvgKind::IntLike => this.int_sum[g] as f64 / count as f64,
                 };
