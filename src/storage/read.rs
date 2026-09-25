@@ -1,36 +1,64 @@
-//! `View::scan`: reads a table's live segments off disk, realigned onto the reading table's
-//! schema by field id, and appends its buffered batches.
+//! `read_segment_as`: reads one segment off disk, realigned onto a table's schema by field id.
+//! `scan::scan_all` and `TableScan` (the exec `TableSource`) are its callers.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use crate::exec::{Batch, Column};
-use crate::storage::manifest::{Manifest, SchemaField, SegmentEntry, Snapshot, TableName};
+use crate::exec::{Batch, Column, Field};
+use crate::storage::manifest::{FieldId, Manifest, SchemaField, SegmentEntry};
 use crate::storage::segment;
 use crate::types::Value;
 
 use super::Error;
 
-/// Every row of `name`: each live segment realigned onto the table's current schema (all
-/// columns, in schema order), then `buffered` in arrival order. A missing segment file is
-/// `Error::SnapshotExpired`.
-pub(crate) fn scan(
-    snapshot: &Snapshot,
-    name: &TableName,
-    buffered: &[Arc<Batch>],
-) -> Result<Vec<Batch>, Error> {
-    let table = snapshot
-        .manifest()
-        .table(name)
-        .ok_or_else(|| Error::UnknownTable(name.to_string()))?;
-    let mut batches = Vec::new();
-    for seg in &table.segments {
-        batches.extend(read_segment_as(snapshot.root(), seg, &table.schema)?);
+/// For each `schema` field, the file column (by `file_ids`, parallel to `file_fields`) that
+/// carries its id, or `None` if the file has none. `Usage` if a matched column's type disagrees
+/// with the schema's.
+pub(crate) fn map_file_columns(
+    seg_id: u64,
+    schema: &[SchemaField],
+    file_ids: &[FieldId],
+    file_fields: &[Field],
+) -> Result<Vec<Option<usize>>, Error> {
+    let mut file_index = Vec::with_capacity(schema.len());
+    for sf in schema {
+        let idx = file_ids.iter().position(|&id| id.0 != 0 && id == sf.id);
+        if let Some(i) = idx {
+            let file_field = &file_fields[i];
+            if file_field.ty != sf.field.ty {
+                return Err(Error::Usage(format!(
+                    "segment {seg_id}: file column {} is {} but schema field {} is {}",
+                    file_field.name, file_field.ty, sf.field.name, sf.field.ty
+                )));
+            }
+        }
+        file_index.push(idx);
     }
-    for b in buffered {
-        batches.push((**b).clone());
+    Ok(file_index)
+}
+
+/// Realigns one decoded row group onto `schema` by field id: field `i` with `file_index[i] =
+/// Some(_)` takes the next column of `projected` (in schema order); `None` gives `rows` NULLs.
+pub(crate) fn realign(
+    schema: &[SchemaField],
+    file_index: &[Option<usize>],
+    projected: &Batch,
+    rows: usize,
+) -> Result<Batch, Error> {
+    let mut next_matched = projected.columns().iter();
+    let mut fields = Vec::with_capacity(schema.len());
+    let mut columns = Vec::with_capacity(schema.len());
+    for (i, sf) in schema.iter().enumerate() {
+        fields.push(sf.field.clone());
+        columns.push(match file_index[i] {
+            Some(_) => next_matched
+                .next()
+                .expect("one column per matched field")
+                .clone(),
+            None => Column::from_values(&sf.field.ty, &vec![Value::Null; rows])
+                .map_err(|e| Error::Usage(e.to_string()))?,
+        });
     }
-    Ok(batches)
+    Batch::new(fields, columns).map_err(|e| Error::Usage(e.to_string()))
 }
 
 /// Reads one segment as a table with `schema` sees it: each schema field comes from the file
@@ -62,43 +90,14 @@ pub(crate) fn read_segment_as(
         )));
     }
 
-    // For each schema field, the file column (if any) that carries its id; `FieldId(0)` and an
-    // id no schema field wants are simply never matched, so that file column is never decoded.
-    let mut file_index: Vec<Option<usize>> = Vec::with_capacity(schema.len());
-    for sf in schema {
-        let idx = file_ids.iter().position(|&id| id.0 != 0 && id == sf.id);
-        if let Some(i) = idx {
-            let file_field = &reader.fields()[i];
-            if file_field.ty != sf.field.ty {
-                return Err(Error::Usage(format!(
-                    "segment {}: file column {} is {} but schema field {} is {}",
-                    seg.id, file_field.name, file_field.ty, sf.field.name, sf.field.ty
-                )));
-            }
-        }
-        file_index.push(idx);
-    }
+    let file_index = map_file_columns(seg.id, schema, file_ids, reader.fields())?;
     let projection: Vec<usize> = file_index.iter().filter_map(|x| *x).collect();
 
     let mut batches = Vec::with_capacity(reader.row_groups().len());
     for rg in 0..reader.row_groups().len() {
         let rows = reader.row_groups()[rg].rows as usize;
         let projected = reader.read_row_group(rg, &projection)?;
-        let mut next_matched = projected.columns().iter();
-        let mut fields = Vec::with_capacity(schema.len());
-        let mut columns = Vec::with_capacity(schema.len());
-        for (i, sf) in schema.iter().enumerate() {
-            fields.push(sf.field.clone());
-            columns.push(match file_index[i] {
-                Some(_) => next_matched
-                    .next()
-                    .expect("one column per matched field")
-                    .clone(),
-                None => Column::from_values(&sf.field.ty, &vec![Value::Null; rows])
-                    .map_err(|e| Error::Usage(e.to_string()))?,
-            });
-        }
-        batches.push(Batch::new(fields, columns).map_err(|e| Error::Usage(e.to_string()))?);
+        batches.push(realign(schema, &file_index, &projected, rows)?);
     }
     Ok(batches)
 }
@@ -141,7 +140,7 @@ pub(crate) fn project_batch(
 mod tests {
     use super::*;
     use crate::exec::{Column, Field};
-    use crate::storage::manifest::{Commit, Edit, FieldId, TableSpec};
+    use crate::storage::manifest::FieldId;
     use crate::storage::segment::{Writer, WriterOptions};
     use crate::types::{DataType, Value};
     use std::path::PathBuf;
@@ -155,80 +154,6 @@ mod tests {
             "adelie-store-read-{tag}-{}-{nanos}",
             std::process::id()
         ))
-    }
-
-    fn schema() -> Vec<Field> {
-        vec![Field {
-            name: "a".to_string(),
-            ty: DataType::Int64,
-        }]
-    }
-
-    fn batch(vals: &[i64]) -> Batch {
-        let v: Vec<Value> = vals.iter().copied().map(Value::Int64).collect();
-        Batch::new(
-            schema(),
-            vec![Column::from_values(&DataType::Int64, &v).unwrap()],
-        )
-        .unwrap()
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // touches the real filesystem
-    fn scan_reads_segments_then_appends_buffered_rows_in_order() {
-        let root = temp_dir("scan");
-        let table = TableName::new("d", "t");
-
-        let created = Commit {
-            base: 0,
-            edits: vec![Edit::CreateTable {
-                spec: TableSpec::new(table.clone(), schema()),
-            }],
-        }
-        .apply(&Manifest::empty(), 0)
-        .unwrap();
-        let entry = created.table(&table).unwrap();
-        let table_dir = entry.dir();
-        let field_ids: Vec<_> = entry.schema.iter().map(|f| f.id).collect();
-
-        let dir = Manifest::table_dir(&root, &table_dir).join("_");
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let mut writer = Writer::new(Vec::new(), schema(), WriterOptions::default()).unwrap();
-        writer.push(&batch(&[1, 2])).unwrap();
-        let (bytes, meta) = writer.finish().unwrap();
-        let seg = SegmentEntry {
-            id: 1,
-            partition: "_".to_string(),
-            seq: 1,
-            rows: meta.rows,
-            bytes: meta.bytes,
-            footer_crc: meta.footer_crc,
-            columns: meta.columns,
-            side_files: Vec::new(),
-            dir: table_dir,
-            field_ids,
-            file_field_ids: Vec::new(),
-        };
-        std::fs::write(Manifest::segment_path(&root, &seg), &bytes).unwrap();
-
-        let manifest = Commit {
-            base: created.version,
-            edits: vec![Edit::AddSegments {
-                table: table.clone(),
-                segments: vec![seg],
-            }],
-        }
-        .apply(&created, 0)
-        .unwrap();
-        let snapshot = Snapshot::new(root.clone(), manifest);
-
-        let buffered = vec![Arc::new(batch(&[3]))];
-        let batches = scan(&snapshot, &table, &buffered).unwrap();
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].rows(), 2);
-        assert_eq!(batches[1], batch(&[3]));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

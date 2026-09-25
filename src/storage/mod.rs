@@ -14,7 +14,10 @@ mod ledger;
 mod lock;
 pub mod manifest;
 mod migrate;
+mod prune;
+mod query;
 mod read;
+mod scan;
 pub mod segment;
 
 use std::collections::BTreeMap;
@@ -771,11 +774,10 @@ impl View {
         self.snapshot.manifest().table(name)
     }
 
-    /// Every row of the table: each live segment's row groups, then buffered batches in
-    /// arrival order. Tombstones are not applied (E5).
+    /// Every live row: tombstones applied (SPEC §6), segments in manifest order, then buffered
+    /// batches in arrival order.
     pub fn scan(&self, name: &TableName) -> Result<Vec<Batch>, Error> {
-        let buffered = self.buffered.get(name).map(Vec::as_slice).unwrap_or(&[]);
-        read::scan(&self.snapshot, name, buffered)
+        scan::scan_all(self, name)
     }
 
     pub fn buffered(&self, name: &TableName) -> &[Arc<Batch>] {
