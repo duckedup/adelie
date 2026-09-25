@@ -223,7 +223,13 @@ mod tests {
 
     #[test]
     fn calendar_invalid_days_are_rejected() {
-        for text in ["2023-02-29", "2024-02-30", "2024-04-31", "1900-02-29", "2024-01-00"] {
+        for text in [
+            "2023-02-29",
+            "2024-02-30",
+            "2024-04-31",
+            "1900-02-29",
+            "2024-01-00",
+        ] {
             assert_eq!(Value::from_text(text, &DataType::Date), None, "{text}");
         }
         for text in ["2024-02-29", "2000-02-29", "2024-12-31"] {

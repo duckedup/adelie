@@ -103,6 +103,9 @@ impl<'a> TableScan<'a> {
     fn read_segment(&self, seg: &SegmentEntry, ctx: &ExecContext) -> Result<Vec<Batch>, ExecError> {
         let schema = &self.table.schema;
         let path = manifest::Manifest::segment_path(&self.root, seg);
+        // Reserve the manifest's recorded size before reading, so the budget can refuse the
+        // read itself; then true it up to what the file actually holds.
+        let mut res = ctx.reserve(usize::try_from(seg.bytes).unwrap_or(usize::MAX))?;
         let bytes = std::fs::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 src(Error::SnapshotExpired {
@@ -112,7 +115,7 @@ impl<'a> TableScan<'a> {
                 src(super::io_err(&path, e))
             }
         })?;
-        let _res = ctx.reserve(bytes.len())?;
+        res.resize(bytes.len())?;
         let reader =
             segment::Reader::open(path.display().to_string(), bytes).map_err(|e| src(e.into()))?;
         let file_ids = seg.file_ids();

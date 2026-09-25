@@ -60,10 +60,12 @@ pub(crate) fn sort_batches(
     if batches.is_empty() {
         return Ok(Vec::new());
     }
+    ctx.check()?;
     let concat = kernels::concat_batches(fields, batches)?;
     let _reservation = ctx.reserve(concat.byte_size())?;
     let cols: Vec<&Column> = concat.columns().iter().collect();
     let order = kernels::sort_indices(&cols, keys);
+    ctx.check()?;
     let sorted = kernels::take_batch(&concat, &order);
     kernels::rechunk(fields, vec![sorted])
 }

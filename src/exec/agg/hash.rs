@@ -308,7 +308,14 @@ mod tests {
         });
         let (mut a, c) = run(&ctx);
         a.merge(&ctx, c).unwrap();
-        assert_eq!(a.finish(&ctx).unwrap().iter().map(Batch::rows).sum::<usize>(), 400);
+        assert_eq!(
+            a.finish(&ctx)
+                .unwrap()
+                .iter()
+                .map(Batch::rows)
+                .sum::<usize>(),
+            400
+        );
     }
 
     /// Sorts `(group_key, count, sum)` rows so a merged and an unmerged run compare equal

@@ -662,12 +662,19 @@ fn hash_join_inner_and_left() {
     let left_want = events_rows.len();
 
     let left_scan = plan_scan(&COLS, None);
-    let right_scan = Plan::Scan(ScanSpec {
-        db: "main".to_string(),
-        table: "svcs".to_string(),
-        columns: vec!["svc".to_string(), "team".to_string()],
-        predicate: None,
-    });
+    // Output names must be unique, so the right side's key is renamed, as a binder's alias would.
+    let right_scan = Plan::Project {
+        input: Box::new(Plan::Scan(ScanSpec {
+            db: "main".to_string(),
+            table: "svcs".to_string(),
+            columns: vec!["svc".to_string(), "team".to_string()],
+            predicate: None,
+        })),
+        exprs: vec![
+            ("svcs_svc".to_string(), Expr::col(0)),
+            ("team".to_string(), Expr::col(1)),
+        ],
+    };
 
     let inner_plan = Plan::Join {
         left: Box::new(left_scan.clone()),
