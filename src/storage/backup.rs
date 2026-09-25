@@ -25,7 +25,11 @@ pub(crate) fn backup_to(store: &Store, dir: &Path) -> Result<u64, Error> {
             dir.display()
         )));
     }
-    store.shared.io.create_dir_all(dir).map_err(|e| io_err(dir, e))?;
+    store
+        .shared
+        .io
+        .create_dir_all(dir)
+        .map_err(|e| io_err(dir, e))?;
 
     // v1 rejects any side file on decode (manifest/mod.rs:87-88): a segment's own file is the
     // only file it owns.
@@ -89,7 +93,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-backup-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-backup-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     #[test]

@@ -264,7 +264,10 @@ fn backup_round_trip_reads_back_and_accepts_writes() {
     store.close().unwrap();
 
     let backup_store = Store::open(&bdir, opts()).unwrap();
-    assert_eq!(flatten(&backup_store.snapshot().scan(&table()).unwrap()), want);
+    assert_eq!(
+        flatten(&backup_store.snapshot().scan(&table()).unwrap()),
+        want
+    );
 
     backup_store.write(&table(), row_batch(&[(9, 0)])).unwrap();
     let mut got = flatten(&backup_store.snapshot().scan(&table()).unwrap());
@@ -286,7 +289,14 @@ fn backup_round_trip_reads_back_and_accepts_writes() {
 fn backup_is_independent_once_the_source_deletes() {
     let dir = temp_dir("backup-independent-src");
     let bdir = temp_dir("backup-independent-dst");
-    let store = Store::open(&dir, StoreOptions { retain_manifests: 0, ..opts() }).unwrap();
+    let store = Store::open(
+        &dir,
+        StoreOptions {
+            retain_manifests: 0,
+            ..opts()
+        },
+    )
+    .unwrap();
     store
         .create_table(TableSpec::new(table(), schema()))
         .unwrap();
@@ -344,9 +354,7 @@ fn backup_carries_retired_tables_with_no_garbage_or_jobs() {
     store
         .create_table(TableSpec::new(second.clone(), schema()))
         .unwrap();
-    store
-        .write(&second, row_batch(&[(0, 0), (0, 1)]))
-        .unwrap();
+    store.write(&second, row_batch(&[(0, 0), (0, 1)])).unwrap();
     let want_second = flatten(&store.snapshot().scan(&second).unwrap());
     store.drop_table(&second).unwrap();
 
@@ -372,7 +380,10 @@ fn backup_carries_retired_tables_with_no_garbage_or_jobs() {
     store.backup_to(&bdir).unwrap();
 
     let backup_store = Store::open(&bdir, opts()).unwrap();
-    assert!(backup_store.jobs().is_empty(), "a job must not travel into the backup");
+    assert!(
+        backup_store.jobs().is_empty(),
+        "a job must not travel into the backup"
+    );
     assert!(
         backup_store
             .snapshot()
@@ -443,7 +454,11 @@ fn migrations_apply_in_number_order_and_a_rerun_is_idempotent() {
         })
         .unwrap();
     assert_eq!(
-        order.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
+        order
+            .borrow()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         vec!["1_a.sql", "2_b.sql", "10_c.sql"]
     );
     assert_eq!(
@@ -464,7 +479,10 @@ fn migrations_apply_in_number_order_and_a_rerun_is_idempotent() {
         })
         .unwrap();
     assert!(applied2.is_empty(), "a rerun must apply nothing new");
-    assert!(order.borrow().is_empty(), "a rerun must call exec zero times");
+    assert!(
+        order.borrow().is_empty(),
+        "a rerun must call exec zero times"
+    );
 
     store.close().unwrap();
     let store = Store::open(&dir, opts()).unwrap();
@@ -491,7 +509,11 @@ fn dry_run_executes_nothing_and_is_deterministic() {
     let dir = temp_dir("ledger-dry-run");
     let mig_dir = temp_dir("ledger-dry-run-migrations");
     std::fs::create_dir_all(&mig_dir).unwrap();
-    let files: [(&str, &str); 3] = [("1_a.sql", "-- a"), ("2_b.sql", "-- b"), ("10_c.sql", "-- c")];
+    let files: [(&str, &str); 3] = [
+        ("1_a.sql", "-- a"),
+        ("2_b.sql", "-- b"),
+        ("10_c.sql", "-- c"),
+    ];
     for (name, sql) in files {
         std::fs::write(mig_dir.join(name), sql).unwrap();
     }
@@ -520,7 +542,10 @@ fn dry_run_executes_nothing_and_is_deterministic() {
             Ok::<(), Infallible>(())
         })
         .unwrap();
-    assert_eq!(pending, pending2, "checksum must be a pure function of the file's bytes");
+    assert_eq!(
+        pending, pending2,
+        "checksum must be a pure function of the file's bytes"
+    );
 
     drop(store);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -559,7 +584,10 @@ fn changed_missing_and_below_are_rejected_with_no_exec_calls() {
             Ok::<(), Infallible>(())
         })
         .unwrap_err();
-    assert!(matches!(err, Error::MigrationChanged { ref name } if name == "2_b.sql"), "{err}");
+    assert!(
+        matches!(err, Error::MigrationChanged { ref name } if name == "2_b.sql"),
+        "{err}"
+    );
     assert_eq!(calls.get(), 0);
 
     // Missing.
@@ -572,7 +600,10 @@ fn changed_missing_and_below_are_rejected_with_no_exec_calls() {
             Ok::<(), Infallible>(())
         })
         .unwrap_err();
-    assert!(matches!(err, Error::MigrationMissing { ref name } if name == "1_a.sql"), "{err}");
+    assert!(
+        matches!(err, Error::MigrationMissing { ref name } if name == "1_a.sql"),
+        "{err}"
+    );
     assert_eq!(calls.get(), 0);
 
     // Below: a new file numbered at or below the highest applied.
@@ -585,7 +616,10 @@ fn changed_missing_and_below_are_rejected_with_no_exec_calls() {
             Ok::<(), Infallible>(())
         })
         .unwrap_err();
-    assert!(matches!(err, Error::MigrationInvalid { ref name, .. } if name == "5_x.sql"), "{err}");
+    assert!(
+        matches!(err, Error::MigrationInvalid { ref name, .. } if name == "5_x.sql"),
+        "{err}"
+    );
     assert_eq!(calls.get(), 0);
 
     // A bad file name is invalid too.
@@ -598,7 +632,10 @@ fn changed_missing_and_below_are_rejected_with_no_exec_calls() {
             Ok::<(), Infallible>(())
         })
         .unwrap_err();
-    assert!(matches!(err, Error::MigrationInvalid { ref name, .. } if name == "x_bad.sql"), "{err}");
+    assert!(
+        matches!(err, Error::MigrationInvalid { ref name, .. } if name == "x_bad.sql"),
+        "{err}"
+    );
     assert_eq!(calls.get(), 0);
 
     drop(store);
@@ -628,7 +665,10 @@ fn a_failing_exec_stops_and_records_nothing_for_that_file() {
             }
         })
         .unwrap_err();
-    assert!(matches!(err, Error::MigrationFailed { ref name, .. } if name == "2_b.sql"), "{err}");
+    assert!(
+        matches!(err, Error::MigrationFailed { ref name, .. } if name == "2_b.sql"),
+        "{err}"
+    );
 
     let recorded: Vec<String> = store.migrations().iter().map(|m| m.name.clone()).collect();
     assert_eq!(
@@ -644,7 +684,11 @@ fn a_failing_exec_stops_and_records_nothing_for_that_file() {
         })
         .unwrap();
     assert_eq!(
-        order.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
+        order
+            .borrow()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         vec!["2_b.sql", "10_c.sql"]
     );
     assert_eq!(
@@ -680,9 +724,16 @@ fn at_least_once_across_a_panic_reruns_only_the_incomplete_file() {
             Ok::<(), Infallible>(())
         })
     }));
-    assert!(result.is_err(), "the panic must propagate through catch_unwind");
+    assert!(
+        result.is_err(),
+        "the panic must propagate through catch_unwind"
+    );
     assert_eq!(
-        order.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
+        order
+            .borrow()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         vec!["1_a.sql", "2_b.sql"]
     );
 
@@ -701,7 +752,11 @@ fn at_least_once_across_a_panic_reruns_only_the_incomplete_file() {
         })
         .unwrap();
     assert_eq!(
-        order.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
+        order
+            .borrow()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         vec!["2_b.sql", "10_c.sql"],
         "2_b.sql ran twice overall, 1_a.sql once"
     );
@@ -772,13 +827,19 @@ impl CrashTarget for LifecycleTarget {
         let mut last: Option<u64> = None;
         for r in store.migrations() {
             if !seen.insert(r.name.clone()) {
-                return Err(io::Error::other(format!("duplicate migration record {}", r.name)));
+                return Err(io::Error::other(format!(
+                    "duplicate migration record {}",
+                    r.name
+                )));
             }
             let n = leading_number(&r.name).ok_or_else(|| {
                 io::Error::other(format!("unparseable migration name {}", r.name))
             })?;
             if last.is_some_and(|prev| n <= prev) {
-                return Err(io::Error::other(format!("migrations out of order at {}", r.name)));
+                return Err(io::Error::other(format!(
+                    "migrations out of order at {}",
+                    r.name
+                )));
             }
             last = Some(n);
         }
@@ -806,11 +867,17 @@ impl CrashTarget for LifecycleTarget {
             }
         }
 
-        Ok(LifecycleStore { store, dir: dir.to_path_buf() })
+        Ok(LifecycleStore {
+            store,
+            dir: dir.to_path_buf(),
+        })
     }
 
     fn write(target: &mut LifecycleStore, batch: &[Row]) -> io::Result<()> {
-        target.store.write(&table(), row_batch(batch)).map_err(to_io)?;
+        target
+            .store
+            .write(&table(), row_batch(batch))
+            .map_err(to_io)?;
         Ok(())
     }
 
@@ -833,7 +900,9 @@ impl CrashTarget for LifecycleTarget {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let backup_dir = target.dir.with_file_name(format!("{name}-backup-{batch}-{nanos}"));
+            let backup_dir = target
+                .dir
+                .with_file_name(format!("{name}-backup-{batch}-{nanos}"));
             target.store.backup_to(&backup_dir).map_err(to_io)?;
         } else {
             let mig_dir = sibling_migrations_dir(&target.dir);

@@ -112,7 +112,11 @@ where
     E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     // A panicking `exec` poisons this; the guard protects no data, so carry on regardless.
-    let _guard = store.shared.ledger.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = store
+        .shared
+        .ledger
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let files = list(dir)?;
     let recorded = store.migrations();
 
@@ -143,13 +147,13 @@ where
         if recorded.iter().any(|r| r.name == f.name) {
             continue;
         }
-        if let Some((highest, name)) = highest_recorded {
-            if f.number <= highest {
-                return Err(Error::MigrationInvalid {
-                    name: f.name.clone(),
-                    detail: format!("numbered below applied migration {name}"),
-                });
-            }
+        if let Some((highest, name)) = highest_recorded
+            && f.number <= highest
+        {
+            return Err(Error::MigrationInvalid {
+                name: f.name.clone(),
+                detail: format!("numbered below applied migration {name}"),
+            });
         }
         pending.push(f);
     }
@@ -173,9 +177,10 @@ where
         crate::storage::fail::point("ledger.pre_record");
         let name = p.name.clone();
         let checksum = p.checksum;
-        store
-            .shared
-            .commit(move |_v| vec![Edit::RecordMigration { name, checksum }], &[])?;
+        store.shared.commit(
+            move |_v| vec![Edit::RecordMigration { name, checksum }],
+            &[],
+        )?;
         applied.push(p);
     }
     Ok(applied)
@@ -203,7 +208,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("adelie-ledger-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "adelie-ledger-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     #[test]

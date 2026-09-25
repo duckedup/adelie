@@ -253,8 +253,14 @@ mod tests {
         }
 
         // Retained: the last 3 (8, 9, 10), per `retention_keeps_only_the_last_n_versioned_links`.
-        assert_eq!(publisher.load_version(10).unwrap(), Some(versions[9].clone()));
-        assert_eq!(publisher.load_version(8).unwrap(), Some(versions[7].clone()));
+        assert_eq!(
+            publisher.load_version(10).unwrap(),
+            Some(versions[9].clone())
+        );
+        assert_eq!(
+            publisher.load_version(8).unwrap(),
+            Some(versions[7].clone())
+        );
         // Pruned: falls outside the retained window.
         assert_eq!(publisher.load_version(1).unwrap(), None);
         std::fs::remove_dir_all(&root).unwrap();

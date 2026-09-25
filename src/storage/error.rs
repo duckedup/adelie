@@ -31,14 +31,24 @@ pub enum Error {
     Usage(String),
     /// `view_at(version)`: the version's manifest link is gone (pruned past `retain_manifests`)
     /// or it is newer than `current`.
-    VersionNotRetained { version: u64, current: u64 },
+    VersionNotRetained {
+        version: u64,
+        current: u64,
+    },
     /// `apply_migrations`: a recorded file changed since it was applied.
-    MigrationChanged { name: String },
+    MigrationChanged {
+        name: String,
+    },
     /// `apply_migrations`: a recorded file is no longer in the directory.
-    MigrationMissing { name: String },
+    MigrationMissing {
+        name: String,
+    },
     /// `apply_migrations`: a bad file name, a duplicate number, non-UTF-8 content, or a pending
     /// number at or below the highest already applied.
-    MigrationInvalid { name: String, detail: String },
+    MigrationInvalid {
+        name: String,
+        detail: String,
+    },
     /// `apply_migrations`: `exec` returned an error for this file.
     MigrationFailed {
         name: String,
@@ -75,7 +85,10 @@ impl fmt::Display for Error {
                 write!(f, "migration {name}: file changed since it was applied")
             }
             Error::MigrationMissing { name } => {
-                write!(f, "migration {name}: applied but no longer in the directory")
+                write!(
+                    f,
+                    "migration {name}: applied but no longer in the directory"
+                )
             }
             Error::MigrationInvalid { name, detail } => {
                 write!(f, "migration {name}: {detail}")
