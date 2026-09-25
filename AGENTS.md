@@ -10,6 +10,23 @@ The maintainer has ADHD. Write for that: terse, answer first, bullets over parag
 idea per line, no preamble or recap. Ask at most one question at a time. Brevity never
 excuses omitting bad news: say plainly when something failed or was skipped.
 
+## Core commitments: Speed, Testing, Stable
+
+Every change is judged against these three (SPEC §1). They carry equal weight. Trading one
+away is a design change: a decision record and an issue first, never an implementation detail.
+
+1. **Speed**: query, ingest and build speed.
+   - The lean build stays under 60s and the default build under 120s (CI-enforced, D0004).
+   - A performance claim is backed by a published benchmark, including where adelie loses.
+2. **Testing**: verify against the real artifact, never assume.
+   - Every behaviour claim has a test that runs in CI. A change without its test is not done.
+   - A bug fix ships with a regression test you watched fail without the fix.
+   - A test asserts the behaviour, not that the code ran. Ask whether it *could* have failed.
+   - SQL correctness is checked differentially against DuckDB (SPEC §13).
+3. **Stable**: crash safety, CRC-checked data on disk, and additive-only formats.
+   - An acknowledged write survives a crash.
+   - Exceeding a resource limit is an error, never a crash.
+
 ## Issue tracking: beads (`bd`)
 
 All work is tracked in **beads** via the `bd` CLI. Do not use GitHub Issues, TodoWrite,
