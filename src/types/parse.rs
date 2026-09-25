@@ -141,8 +141,10 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Every canonical date is ASCII; rejecting anything else up front keeps the byte-offset
+/// slicing below on char boundaries, so hostile text is `None`, never a panic.
 fn parse_date(text: &str) -> Option<i32> {
-    if text.len() < 6 {
+    if !text.is_ascii() || text.len() < 6 {
         return None;
     }
     let (year_part, rest) = text.split_at(text.len() - 6);
@@ -153,13 +155,25 @@ fn parse_date(text: &str) -> Option<i32> {
     let year: i64 = year_part.parse().ok()?;
     let month: u32 = rest[1..3].parse().ok()?;
     let day: u32 = rest[4..6].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
         return None;
     }
     i32::try_from(days_from_civil(year, month, day)).ok()
 }
 
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
 fn parse_timestamp(text: &str) -> Option<i64> {
+    if !text.is_ascii() {
+        return None;
+    }
     if let Some(days) = parse_date(text) {
         return (days as i64).checked_mul(NS_PER_DAY);
     }
@@ -197,6 +211,24 @@ fn parse_timestamp(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_ascii_date_and_timestamp_text_is_none_not_a_panic() {
+        for text in ["2024-é-01", "é2024-01-01", "2024-01-0é", "2024-01-01T1é:00:00Z"] {
+            assert_eq!(Value::from_text(text, &DataType::Date), None, "{text}");
+            assert_eq!(Value::from_text(text, &DataType::Timestamp), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn calendar_invalid_days_are_rejected() {
+        for text in ["2023-02-29", "2024-02-30", "2024-04-31", "1900-02-29", "2024-01-00"] {
+            assert_eq!(Value::from_text(text, &DataType::Date), None, "{text}");
+        }
+        for text in ["2024-02-29", "2000-02-29", "2024-12-31"] {
+            assert!(Value::from_text(text, &DataType::Date).is_some(), "{text}");
+        }
+    }
 
     fn dt(precision: u8, scale: u8) -> DataType {
         DataType::decimal(precision, scale).unwrap()
