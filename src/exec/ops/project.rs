@@ -98,7 +98,10 @@ mod tests {
     #[test]
     fn duplicate_output_name_is_plan_error() {
         let input = vec![field("a", DataType::Int64)];
-        let exprs = vec![("a".to_string(), Expr::col(0)), ("a".to_string(), Expr::col(0))];
+        let exprs = vec![
+            ("a".to_string(), Expr::col(0)),
+            ("a".to_string(), Expr::col(0)),
+        ];
         let err = Project::new(exprs, &input).err().unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }

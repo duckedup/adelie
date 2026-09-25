@@ -155,7 +155,10 @@ mod tests {
 
         let mut whole = JoinBuildSink::new(fields.clone(), vec![0]);
         whole
-            .push(&ctx, int_batch(fields.clone(), vec![vec![1, 2, 1], vec![10, 20, 30]]))
+            .push(
+                &ctx,
+                int_batch(fields.clone(), vec![vec![1, 2, 1], vec![10, 20, 30]]),
+            )
             .unwrap();
         let whole_table = whole.into_table(&ctx).unwrap();
 
@@ -163,12 +166,18 @@ mod tests {
         a.push(&ctx, int_batch(fields.clone(), vec![vec![1], vec![10]]))
             .unwrap();
         let mut b = JoinBuildSink::new(fields.clone(), vec![0]);
-        b.push(&ctx, int_batch(fields.clone(), vec![vec![2, 1], vec![20, 30]]))
-            .unwrap();
+        b.push(
+            &ctx,
+            int_batch(fields.clone(), vec![vec![2, 1], vec![20, 30]]),
+        )
+        .unwrap();
         a.merge(&ctx, b).unwrap();
         let merged_table = a.into_table(&ctx).unwrap();
 
-        assert_eq!(table_keys_sorted(&whole_table), table_keys_sorted(&merged_table));
+        assert_eq!(
+            table_keys_sorted(&whole_table),
+            table_keys_sorted(&merged_table)
+        );
         assert_eq!(whole_table.batch.rows(), merged_table.batch.rows());
     }
 
@@ -193,7 +202,8 @@ mod tests {
         let ctx = ExecContext::unlimited();
         let mut sink = JoinBuildSink::new(fields.clone(), vec![0]);
         let col = Column::from_values(&DataType::Int64, &[Value::Int64(1), Value::Null]).unwrap();
-        sink.push(&ctx, Batch::new(fields, vec![col]).unwrap()).unwrap();
+        sink.push(&ctx, Batch::new(fields, vec![col]).unwrap())
+            .unwrap();
         let table = sink.into_table(&ctx).unwrap();
         let total_row_ids: usize = table.map.values().map(Vec::len).sum();
         assert_eq!(total_row_ids, 1);
@@ -204,8 +214,10 @@ mod tests {
         let fields = vec![field("k", DataType::Int64)];
         let ctx = ExecContext::unlimited();
         let mut sink = JoinBuildSink::new(fields.clone(), vec![0]);
-        sink.push(&ctx, int_batch(fields.clone(), vec![vec![1, 2]])).unwrap();
-        sink.push(&ctx, int_batch(fields.clone(), vec![vec![3]])).unwrap();
+        sink.push(&ctx, int_batch(fields.clone(), vec![vec![1, 2]]))
+            .unwrap();
+        sink.push(&ctx, int_batch(fields.clone(), vec![vec![3]]))
+            .unwrap();
         let out = sink.finish(&ctx).unwrap();
         let total: usize = out.iter().map(Batch::rows).sum();
         assert_eq!(total, 3);

@@ -48,7 +48,10 @@ impl HashJoinProbe {
         fields.extend(table.batch.fields().iter().cloned());
         for i in 0..fields.len() {
             if fields[..i].iter().any(|f| f.name == fields[i].name) {
-                return Err(ExecError::Plan(format!("duplicate join output column: {}", fields[i].name)));
+                return Err(ExecError::Plan(format!(
+                    "duplicate join output column: {}",
+                    fields[i].name
+                )));
             }
         }
 
@@ -65,7 +68,13 @@ impl HashJoinProbe {
         &self.fields
     }
 
-    fn emit(&self, probe_batch: &Batch, probe_idx: &[u32], build_idx: &[Option<u32>], out: &mut Vec<Batch>) {
+    fn emit(
+        &self,
+        probe_batch: &Batch,
+        probe_idx: &[u32],
+        build_idx: &[Option<u32>],
+        out: &mut Vec<Batch>,
+    ) {
         let mut columns = Vec::with_capacity(self.fields.len());
         for col in probe_batch.columns() {
             columns.push(take(col, probe_idx));
@@ -80,7 +89,12 @@ impl HashJoinProbe {
 }
 
 impl Operator for HashJoinProbe {
-    fn push(&mut self, ctx: &ExecContext, batch: Batch, out: &mut Vec<Batch>) -> Result<(), ExecError> {
+    fn push(
+        &mut self,
+        ctx: &ExecContext,
+        batch: Batch,
+        out: &mut Vec<Batch>,
+    ) -> Result<(), ExecError> {
         ctx.check()?;
         let key_cols: Vec<&Column> = self.probe_keys.iter().map(|&i| batch.column(i)).collect();
         let mut probe_idx: Vec<u32> = Vec::new();
@@ -144,7 +158,12 @@ mod tests {
 
     /// Build-side names get an `r_` prefix, so a test may reuse the probe's fields for the build
     /// side without tripping `new`'s duplicate-output-name check.
-    fn table(fields: Vec<Field>, keys: Vec<usize>, batches: Vec<Batch>, ctx: &ExecContext) -> Arc<JoinTable> {
+    fn table(
+        fields: Vec<Field>,
+        keys: Vec<usize>,
+        batches: Vec<Batch>,
+        ctx: &ExecContext,
+    ) -> Arc<JoinTable> {
         let renamed: Vec<Field> = fields
             .iter()
             .map(|f| field(&format!("r_{}", f.name), f.ty.clone()))
@@ -171,7 +190,11 @@ mod tests {
         let mut rows = Vec::new();
         for b in batches {
             for r in 0..b.rows() {
-                rows.push((0..b.fields().len()).map(|c| format!("{:?}", b.column(c).get(r))).collect());
+                rows.push(
+                    (0..b.fields().len())
+                        .map(|c| format!("{:?}", b.column(c).get(r)))
+                        .collect(),
+                );
             }
         }
         rows.sort();
@@ -185,7 +208,10 @@ mod tests {
     // customers (probe/left): id, name. orders (build/right): order_id, cust_id, amt.
     // Mirrors tests/slt/join.slt.
     fn customers() -> (Vec<Field>, Batch) {
-        let fields = vec![field("id", DataType::Int64), field("name", DataType::String)];
+        let fields = vec![
+            field("id", DataType::Int64),
+            field("name", DataType::String),
+        ];
         let b = batch(
             fields.clone(),
             vec![
@@ -223,19 +249,36 @@ mod tests {
         let (cust_fields, cust_batch) = customers();
         let (order_fields, order_batch) = orders();
         let t = table(order_fields, vec![1], vec![order_batch], &ctx);
-        let mut probe = HashJoinProbe::new(t, &cust_fields, vec![0], JoinKind::Inner, &ctx).unwrap();
+        let mut probe =
+            HashJoinProbe::new(t, &cust_fields, vec![0], JoinKind::Inner, &ctx).unwrap();
         let out = probe_all(&mut probe, &ctx, vec![cust_batch]);
 
         // columns: id, name, order_id, cust_id, amt -- check (name, amt) pairs.
         let mut got: Vec<(String, String)> = out
             .iter()
-            .flat_map(|b| (0..b.rows()).map(move |r| (format!("{:?}", b.column(1).get(r)), format!("{:?}", b.column(4).get(r)))))
+            .flat_map(|b| {
+                (0..b.rows()).map(move |r| {
+                    (
+                        format!("{:?}", b.column(1).get(r)),
+                        format!("{:?}", b.column(4).get(r)),
+                    )
+                })
+            })
             .collect();
         got.sort();
         let mut want = vec![
-            (format!("{:?}", Value::String("Alice".into())), format!("{:?}", Value::Int64(100))),
-            (format!("{:?}", Value::String("Alice".into())), format!("{:?}", Value::Int64(50))),
-            (format!("{:?}", Value::String("Bob".into())), format!("{:?}", Value::Int64(75))),
+            (
+                format!("{:?}", Value::String("Alice".into())),
+                format!("{:?}", Value::Int64(100)),
+            ),
+            (
+                format!("{:?}", Value::String("Alice".into())),
+                format!("{:?}", Value::Int64(50)),
+            ),
+            (
+                format!("{:?}", Value::String("Bob".into())),
+                format!("{:?}", Value::Int64(75)),
+            ),
         ];
         want.sort();
         assert_eq!(got, want);
@@ -261,7 +304,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_carol_null, "Carol must appear once with NULL build columns");
+        assert!(
+            found_carol_null,
+            "Carol must appear once with NULL build columns"
+        );
     }
 
     /// Falsify: fails if a NULL key uses `NullKeys::Group` (NULLs would then match each other).
@@ -276,11 +322,15 @@ mod tests {
         let build_fields = vec![field("k", DataType::Int64), field("tag", DataType::String)];
         let build_batch = batch(
             build_fields.clone(),
-            vec![vec![Value::Null, Value::Int64(1)], vec![Value::String("b1".into()), Value::String("b2".into())]],
+            vec![
+                vec![Value::Null, Value::Int64(1)],
+                vec![Value::String("b1".into()), Value::String("b2".into())],
+            ],
         );
         let t = table(build_fields, vec![0], vec![build_batch], &ctx);
 
-        let mut inner = HashJoinProbe::new(Arc::clone(&t), &fields, vec![0], JoinKind::Inner, &ctx).unwrap();
+        let mut inner =
+            HashJoinProbe::new(Arc::clone(&t), &fields, vec![0], JoinKind::Inner, &ctx).unwrap();
         let inner_out = probe_all(&mut inner, &ctx, vec![probe_batch.clone()]);
         assert_eq!(inner_out.iter().map(Batch::rows).sum::<usize>(), 0);
 
@@ -297,7 +347,10 @@ mod tests {
         let fields = vec![field("k", DataType::Float64)];
         let build_batch = batch(fields.clone(), vec![vec![Value::Float64(0.0)]]);
         let t = table(fields.clone(), vec![0], vec![build_batch], &ctx);
-        let probe_batch = batch(fields.clone(), vec![vec![Value::Float64(-0.0), Value::Float64(f64::NAN)]]);
+        let probe_batch = batch(
+            fields.clone(),
+            vec![vec![Value::Float64(-0.0), Value::Float64(f64::NAN)]],
+        );
         let mut probe = HashJoinProbe::new(t, &fields, vec![0], JoinKind::Inner, &ctx).unwrap();
         let out = probe_all(&mut probe, &ctx, vec![probe_batch]);
         assert_eq!(out.iter().map(Batch::rows).sum::<usize>(), 1);
@@ -325,17 +378,31 @@ mod tests {
         let fields = vec![field("a", DataType::Int64), field("b", DataType::Int64)];
         let build_batch = batch(
             fields.clone(),
-            vec![vec![Value::Int64(1), Value::Int64(1)], vec![Value::Int64(1), Value::Int64(2)]],
+            vec![
+                vec![Value::Int64(1), Value::Int64(1)],
+                vec![Value::Int64(1), Value::Int64(2)],
+            ],
         );
         let t = table(fields.clone(), vec![0, 1], vec![build_batch], &ctx);
         let probe_batch = batch(
             fields.clone(),
-            vec![vec![Value::Int64(1), Value::Int64(2)], vec![Value::Int64(1), Value::Int64(1)]],
+            vec![
+                vec![Value::Int64(1), Value::Int64(2)],
+                vec![Value::Int64(1), Value::Int64(1)],
+            ],
         );
         let mut probe = HashJoinProbe::new(t, &fields, vec![0, 1], JoinKind::Inner, &ctx).unwrap();
         let out = probe_all(&mut probe, &ctx, vec![probe_batch]);
         assert_eq!(out.iter().map(Batch::rows).sum::<usize>(), 1);
-        assert_eq!(rows_sorted(&out), vec![row(&[Value::Int64(1), Value::Int64(1), Value::Int64(1), Value::Int64(1)])]);
+        assert_eq!(
+            rows_sorted(&out),
+            vec![row(&[
+                Value::Int64(1),
+                Value::Int64(1),
+                Value::Int64(1),
+                Value::Int64(1)
+            ])]
+        );
     }
 
     #[test]
@@ -345,7 +412,9 @@ mod tests {
         let build_fields = vec![field("k", DataType::UInt64)];
         let build_batch = batch(build_fields.clone(), vec![vec![Value::UInt64(1)]]);
         let t = table(build_fields, vec![0], vec![build_batch], &ctx);
-        let err = HashJoinProbe::new(t, &probe_fields, vec![0], JoinKind::Inner, &ctx).err().unwrap();
+        let err = HashJoinProbe::new(t, &probe_fields, vec![0], JoinKind::Inner, &ctx)
+            .err()
+            .unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }
 
@@ -358,7 +427,9 @@ mod tests {
         let mut sink = JoinBuildSink::new(build_fields, vec![0]);
         sink.push(&ctx, build_batch).unwrap();
         let t = Arc::new(sink.into_table(&ctx).unwrap());
-        let err = HashJoinProbe::new(t, &probe_fields, vec![0], JoinKind::Inner, &ctx).err().unwrap();
+        let err = HashJoinProbe::new(t, &probe_fields, vec![0], JoinKind::Inner, &ctx)
+            .err()
+            .unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }
 
@@ -375,7 +446,10 @@ mod tests {
         let probe_batch = batch(fields.clone(), vec![vec![Value::Int64(1)]]);
         let mut probe = HashJoinProbe::new(t, &fields, vec![0], JoinKind::Inner, &ctx).unwrap();
         let out = probe_all(&mut probe, &ctx, vec![probe_batch]);
-        assert!(out.len() > 1, "5000 rows over BATCH_ROWS must split into more than one batch");
+        assert!(
+            out.len() > 1,
+            "5000 rows over BATCH_ROWS must split into more than one batch"
+        );
         for b in &out {
             assert!(b.rows() <= BATCH_ROWS);
         }

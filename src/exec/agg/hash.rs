@@ -118,8 +118,8 @@ impl HashAggregateSink {
             return g;
         }
         let g = self.groups;
-        for k in 0..self.group_by.len() {
-            self.keys[k].push(cols[k].get(row));
+        for (builder, col) in self.keys.iter_mut().zip(cols) {
+            builder.push(col.get(row));
         }
         self.map.insert(key_buf.clone(), g);
         self.groups += 1;
@@ -303,7 +303,10 @@ mod tests {
     #[test]
     fn group_by_cat_count_sum_avg_min_max() {
         let ctx = ExecContext::unlimited();
-        let input = vec![field("cat", DataType::Int64), field("sales", DataType::Int64)];
+        let input = vec![
+            field("cat", DataType::Int64),
+            field("sales", DataType::Int64),
+        ];
         let aggs = vec![
             call(AggFunc::CountStar, &[], None, "n"),
             call(AggFunc::Sum, &[1], None, "sum_sales"),
@@ -314,7 +317,8 @@ mod tests {
         let mut sink = HashAggregateSink::new(&input, vec![0], aggs).unwrap();
         let cats = int_col(&[Some(1), Some(2), Some(1), Some(2), Some(1)]);
         let sales = int_col(&[Some(10), Some(20), Some(30), Some(40), Some(50)]);
-        sink.push(&ctx, batch(input.clone(), vec![cats, sales])).unwrap();
+        sink.push(&ctx, batch(input.clone(), vec![cats, sales]))
+            .unwrap();
         let out = sink.finish(&ctx).unwrap();
 
         let mut rows: Vec<(i64, i64, i64, i64, i64, i64)> = out
@@ -363,7 +367,8 @@ mod tests {
         let input = vec![field("x", DataType::Int64)];
         let aggs = vec![call(AggFunc::CountStar, &[], None, "n")];
         let mut sink = HashAggregateSink::new(&input, vec![], aggs).unwrap();
-        sink.push(&ctx, batch(input.clone(), vec![int_col(&[Some(1)])])).unwrap();
+        sink.push(&ctx, batch(input.clone(), vec![int_col(&[Some(1)])]))
+            .unwrap();
         let out = sink.finish(&ctx).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rows(), 1);
@@ -421,7 +426,8 @@ mod tests {
             Value::Bool(true),
         ];
         let flag = Column::from_values(&DataType::Bool, &flag_vals).unwrap();
-        sink.push(&ctx, batch(input.clone(), vec![x, flag])).unwrap();
+        sink.push(&ctx, batch(input.clone(), vec![x, flag]))
+            .unwrap();
         let out = sink.finish(&ctx).unwrap();
         assert_eq!(i64_at(out[0].column(0), 0), Some(2));
     }
@@ -429,7 +435,10 @@ mod tests {
     #[test]
     fn partial_vs_single_merge_by_key_not_index() {
         let ctx = ExecContext::unlimited();
-        let input = vec![field("cat", DataType::Int64), field("sales", DataType::Int64)];
+        let input = vec![
+            field("cat", DataType::Int64),
+            field("sales", DataType::Int64),
+        ];
         let aggs_for = || {
             vec![
                 call(AggFunc::CountStar, &[], None, "n"),
@@ -513,8 +522,11 @@ mod tests {
         let input = vec![field("x", DataType::Int64)];
         let aggs = || vec![call(AggFunc::CountStar, &[], None, "n")];
         let mut a = HashAggregateSink::new(&input, vec![], aggs()).unwrap();
-        a.push(&ctx, batch(input.clone(), vec![int_col(&[Some(1), Some(2)])]))
-            .unwrap();
+        a.push(
+            &ctx,
+            batch(input.clone(), vec![int_col(&[Some(1), Some(2)])]),
+        )
+        .unwrap();
         let mut b = HashAggregateSink::new(&input, vec![], aggs()).unwrap();
         b.push(&ctx, batch(input.clone(), vec![int_col(&[Some(3)])]))
             .unwrap();

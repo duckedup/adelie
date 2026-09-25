@@ -10,7 +10,7 @@ use crate::exec::kernels::{self, rowkey::NullKeys};
 use crate::exec::{Bitmap, Column, ColumnBuilder};
 use crate::storage::segment::value::{decode_value, encode_value};
 use crate::storage::segment::wire::{Cursor, Sink};
-use crate::types::{total_cmp, DataType, Value};
+use crate::types::{DataType, Value, total_cmp};
 
 struct Entry {
     value: Value,

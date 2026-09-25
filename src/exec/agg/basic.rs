@@ -171,7 +171,8 @@ pub(crate) struct SumAccumulator {
 
 impl SumAccumulator {
     pub(crate) fn new(ty: &DataType) -> Result<Self, ExecError> {
-        let kind = SumKind::of(ty).ok_or_else(|| ExecError::Plan(format!("sum does not support {ty}")))?;
+        let kind =
+            SumKind::of(ty).ok_or_else(|| ExecError::Plan(format!("sum does not support {ty}")))?;
         Ok(SumAccumulator {
             kind,
             has: Vec::new(),
@@ -667,7 +668,9 @@ impl ArgAccumulator {
             return Err(ExecError::Plan(format!("{name} key does not support LIST")));
         }
         if matches!(value, DataType::List(_)) {
-            return Err(ExecError::Plan(format!("{name} value does not support LIST")));
+            return Err(ExecError::Plan(format!(
+                "{name} value does not support LIST"
+            )));
         }
         Ok(ArgAccumulator {
             value_ty: value.clone(),
@@ -734,7 +737,12 @@ impl GroupsAccumulator for ArgAccumulator {
         let other = downcast::<Self>(other)?;
         for (g, &target) in groups.iter().enumerate() {
             if let Some(Some((key, value))) = other.states.get(g) {
-                Self::consider(self.is_max, &mut self.states[target], key.clone(), value.clone());
+                Self::consider(
+                    self.is_max,
+                    &mut self.states[target],
+                    key.clone(),
+                    value.clone(),
+                );
             }
         }
         Ok(())
@@ -918,12 +926,18 @@ mod tests {
         let groups = [0, 1, 0, 2, 1, 0];
         check_split(
             || Box::new(CountAccumulator::new(false)),
-            &[c.clone()],
+            std::slice::from_ref(&c),
             None,
             &groups,
             4,
         );
-        check_split(|| Box::new(CountAccumulator::new(true)), &[c], None, &groups, 4);
+        check_split(
+            || Box::new(CountAccumulator::new(true)),
+            &[c],
+            None,
+            &groups,
+            4,
+        );
     }
 
     #[test]
@@ -1004,7 +1018,10 @@ mod tests {
         let groups = [0, 0];
         let mut avg = AvgAccumulator::new(&DataType::Int64).unwrap();
         avg.update(&groups, 1, &[&c], None).unwrap();
-        assert_eq!(Box::new(avg).finish(1).unwrap().get(0), Value::Float64(15.0));
+        assert_eq!(
+            Box::new(avg).finish(1).unwrap().get(0),
+            Value::Float64(15.0)
+        );
     }
 
     #[test]
@@ -1044,14 +1061,21 @@ mod tests {
     fn min_max_float64_nan_is_greatest_and_zero_signs_are_equal() {
         let c = col(
             &DataType::Float64,
-            &[Value::Float64(1.0), Value::Float64(f64::NAN), Value::Float64(-0.0)],
+            &[
+                Value::Float64(1.0),
+                Value::Float64(f64::NAN),
+                Value::Float64(-0.0),
+            ],
         );
         let groups = [0, 0, 0];
 
         let mut min = MinMaxAccumulator::new(&DataType::Float64, false).unwrap();
         min.update(&groups, 1, &[&c], None).unwrap();
         let got = Box::new(min).finish(1).unwrap().get(0);
-        assert_eq!(total_cmp(&got, &Value::Float64(-0.0)), Some(Ordering::Equal));
+        assert_eq!(
+            total_cmp(&got, &Value::Float64(-0.0)),
+            Some(Ordering::Equal)
+        );
 
         let mut max = MinMaxAccumulator::new(&DataType::Float64, true).unwrap();
         max.update(&groups, 1, &[&c], None).unwrap();
@@ -1083,7 +1107,7 @@ mod tests {
         let groups = [0, 1, 0, 2, 1, 0];
         check_split(
             || Box::new(MinMaxAccumulator::new(&DataType::Int64, false).unwrap()),
-            &[c.clone()],
+            std::slice::from_ref(&c),
             None,
             &groups,
             4,
@@ -1110,7 +1134,12 @@ mod tests {
         );
         let scores = col(
             &DataType::Int64,
-            &[Value::Int64(1), Value::Null, Value::Int64(5), Value::Int64(5)],
+            &[
+                Value::Int64(1),
+                Value::Null,
+                Value::Int64(5),
+                Value::Int64(5),
+            ],
         );
         let groups = [0, 0, 0, 0];
         let mut acc = ArgAccumulator::new(&DataType::String, &DataType::Int64, true).unwrap();
@@ -1168,8 +1197,12 @@ mod tests {
     #[test]
     fn count_sum_avg_min_max_arg_merge_encoded_rejects_garbage() {
         assert_merge_encoded_rejects_garbage(|| Box::new(CountAccumulator::new(false)));
-        assert_merge_encoded_rejects_garbage(|| Box::new(SumAccumulator::new(&DataType::Int64).unwrap()));
-        assert_merge_encoded_rejects_garbage(|| Box::new(AvgAccumulator::new(&DataType::Int64).unwrap()));
+        assert_merge_encoded_rejects_garbage(|| {
+            Box::new(SumAccumulator::new(&DataType::Int64).unwrap())
+        });
+        assert_merge_encoded_rejects_garbage(|| {
+            Box::new(AvgAccumulator::new(&DataType::Int64).unwrap())
+        });
         assert_merge_encoded_rejects_garbage(|| {
             Box::new(MinMaxAccumulator::new(&DataType::Int64, true).unwrap())
         });

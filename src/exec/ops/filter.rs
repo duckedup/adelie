@@ -57,7 +57,11 @@ mod tests {
     }
 
     fn gt(col: usize, v: i64) -> Expr {
-        Expr::cmp(CmpOp::Gt, Expr::col(col), Expr::lit(Value::Int64(v), DataType::Int64))
+        Expr::cmp(
+            CmpOp::Gt,
+            Expr::col(col),
+            Expr::lit(Value::Int64(v), DataType::Int64),
+        )
     }
 
     #[test]

@@ -10,7 +10,9 @@ pub(crate) struct UnionSource<'a> {
 }
 
 impl<'a> UnionSource<'a> {
-    pub(crate) fn new(inputs: Vec<Box<dyn MorselSource + 'a>>) -> Result<UnionSource<'a>, ExecError> {
+    pub(crate) fn new(
+        inputs: Vec<Box<dyn MorselSource + 'a>>,
+    ) -> Result<UnionSource<'a>, ExecError> {
         let fields = match inputs.first() {
             Some(first) => first.fields().to_vec(),
             None => {
@@ -87,7 +89,11 @@ mod tests {
     }
 
     fn one_row_batch(f: &Field, v: Value) -> Batch {
-        Batch::new(vec![f.clone()], vec![Column::from_values(&f.ty, &[v]).unwrap()]).unwrap()
+        Batch::new(
+            vec![f.clone()],
+            vec![Column::from_values(&f.ty, &[v]).unwrap()],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -118,13 +124,17 @@ mod tests {
         let fb = field("b", DataType::Bool);
         let src1 = BatchSource::new(vec![fa], vec![]);
         let src2 = BatchSource::new(vec![fb], vec![]);
-        let err = UnionSource::new(vec![Box::new(src1), Box::new(src2)]).err().unwrap();
+        let err = UnionSource::new(vec![Box::new(src1), Box::new(src2)])
+            .err()
+            .unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }
 
     #[test]
     fn empty_inputs_is_a_plan_error() {
-        let err = UnionSource::new(Vec::<Box<dyn MorselSource>>::new()).err().unwrap();
+        let err = UnionSource::new(Vec::<Box<dyn MorselSource>>::new())
+            .err()
+            .unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }
 }

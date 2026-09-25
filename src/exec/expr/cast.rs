@@ -35,37 +35,53 @@ const NS_PER_DAY: i64 = 86_400_000_000_000;
 
 fn cast_err(v: &Value, to: &DataType) -> ExecError {
     ExecError::Cast {
-        value: v.to_text().expect("non-null, non-LIST value always has text"),
+        value: v
+            .to_text()
+            .expect("non-null, non-LIST value always has text"),
         to: to.clone(),
     }
 }
 
 fn bool_val(v: &Value) -> bool {
-    let Value::Bool(b) = v else { unreachable!("checked by castable") };
+    let Value::Bool(b) = v else {
+        unreachable!("checked by castable")
+    };
     *b
 }
 fn int_val(v: &Value) -> i64 {
-    let Value::Int64(n) = v else { unreachable!("checked by castable") };
+    let Value::Int64(n) = v else {
+        unreachable!("checked by castable")
+    };
     *n
 }
 fn uint_val(v: &Value) -> u64 {
-    let Value::UInt64(n) = v else { unreachable!("checked by castable") };
+    let Value::UInt64(n) = v else {
+        unreachable!("checked by castable")
+    };
     *n
 }
 fn ts_val(v: &Value) -> i64 {
-    let Value::Timestamp(n) = v else { unreachable!("checked by castable") };
+    let Value::Timestamp(n) = v else {
+        unreachable!("checked by castable")
+    };
     *n
 }
 fn date_val(v: &Value) -> i32 {
-    let Value::Date(n) = v else { unreachable!("checked by castable") };
+    let Value::Date(n) = v else {
+        unreachable!("checked by castable")
+    };
     *n
 }
 fn uuid_val(v: &Value) -> [u8; 16] {
-    let Value::Uuid(b) = v else { unreachable!("checked by castable") };
+    let Value::Uuid(b) = v else {
+        unreachable!("checked by castable")
+    };
     *b
 }
 fn ip_val(v: &Value) -> Ip {
-    let Value::Ip(ip) = v else { unreachable!("checked by castable") };
+    let Value::Ip(ip) = v else {
+        unreachable!("checked by castable")
+    };
     *ip
 }
 
@@ -174,9 +190,9 @@ fn cast_numeric(v: &Value, to: &DataType) -> Result<Value, ExecError> {
         (Value::Float64(f), DataType::Decimal(dt)) => float_to_decimal(*f, *dt),
         (Value::Decimal(d), DataType::Int64) => decimal_to_int64_rounded(*d).map(Value::Int64),
         (Value::Decimal(d), DataType::UInt64) => decimal_to_uint64_rounded(*d).map(Value::UInt64),
-        (Value::Decimal(d), DataType::Float64) => {
-            Some(Value::Float64(d.unscaled() as f64 / pow10(d.scale()) as f64))
-        }
+        (Value::Decimal(d), DataType::Float64) => Some(Value::Float64(
+            d.unscaled() as f64 / pow10(d.scale()) as f64,
+        )),
         (Value::Decimal(d), DataType::Decimal(dt)) => decimal_to_decimal(*d, *dt),
         _ => unreachable!("cast_numeric called with a non-numeric pair"),
     };
@@ -185,10 +201,15 @@ fn cast_numeric(v: &Value, to: &DataType) -> Result<Value, ExecError> {
 
 fn cast_value(v: &Value, from: &DataType, to: &DataType) -> Result<Value, ExecError> {
     if matches!(to, DataType::String) {
-        return Ok(Value::String(v.to_text().expect("non-null, non-LIST value always has text")));
+        return Ok(Value::String(
+            v.to_text()
+                .expect("non-null, non-LIST value always has text"),
+        ));
     }
     if matches!(from, DataType::String) {
-        let Value::String(s) = v else { unreachable!("from is STRING") };
+        let Value::String(s) = v else {
+            unreachable!("from is STRING")
+        };
         return Value::from_text(s, to).ok_or_else(|| ExecError::Cast {
             value: s.clone(),
             to: to.clone(),
@@ -202,9 +223,9 @@ fn cast_value(v: &Value, from: &DataType, to: &DataType) -> Result<Value, ExecEr
         (DataType::Bool, DataType::UInt64) => Ok(Value::UInt64(bool_val(v) as u64)),
         (DataType::Int64, DataType::Bool) => Ok(Value::Bool(int_val(v) != 0)),
         (DataType::UInt64, DataType::Bool) => Ok(Value::Bool(uint_val(v) != 0)),
-        (DataType::Timestamp, DataType::Date) => {
-            timestamp_to_date(ts_val(v)).map(Value::Date).ok_or_else(|| cast_err(v, to))
-        }
+        (DataType::Timestamp, DataType::Date) => timestamp_to_date(ts_val(v))
+            .map(Value::Date)
+            .ok_or_else(|| cast_err(v, to)),
         (DataType::Date, DataType::Timestamp) => date_to_timestamp_ns(date_val(v))
             .map(Value::Timestamp)
             .ok_or_else(|| cast_err(v, to)),
@@ -274,9 +295,15 @@ mod tests {
     #[test]
     fn float_to_int_rounds_half_away_from_zero() {
         let col = one(&DataType::Float64, Value::Float64(2.5));
-        assert_eq!(cast(&col, &DataType::Int64).unwrap().get(0), Value::Int64(3));
+        assert_eq!(
+            cast(&col, &DataType::Int64).unwrap().get(0),
+            Value::Int64(3)
+        );
         let col = one(&DataType::Float64, Value::Float64(-2.5));
-        assert_eq!(cast(&col, &DataType::Int64).unwrap().get(0), Value::Int64(-3));
+        assert_eq!(
+            cast(&col, &DataType::Int64).unwrap().get(0),
+            Value::Int64(-3)
+        );
     }
 
     #[test]

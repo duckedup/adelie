@@ -52,13 +52,19 @@ mod tests {
 
     fn open(dir: &Path) -> Store {
         let store = Store::open(dir, StoreOptions::default()).unwrap();
-        store.create_table(TableSpec::new(table(), schema())).unwrap();
+        store
+            .create_table(TableSpec::new(table(), schema()))
+            .unwrap();
         store
     }
 
     fn batch(values: &[i64]) -> Batch {
         let vals: Vec<Value> = values.iter().copied().map(Value::Int64).collect();
-        Batch::new(schema(), vec![Column::from_values(&DataType::Int64, &vals).unwrap()]).unwrap()
+        Batch::new(
+            schema(),
+            vec![Column::from_values(&DataType::Int64, &vals).unwrap()],
+        )
+        .unwrap()
     }
 
     fn count_plan() -> Plan {
@@ -114,7 +120,9 @@ mod tests {
         let seg = view.table(&table()).unwrap().segments[0].clone();
         std::fs::remove_file(Manifest::segment_path(&dir, &seg)).unwrap();
 
-        let err = view.query(&count_plan(), &ExecOptions::default()).unwrap_err();
+        let err = view
+            .query(&count_plan(), &ExecOptions::default())
+            .unwrap_err();
         assert!(matches!(err, Error::SnapshotExpired { .. }), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }

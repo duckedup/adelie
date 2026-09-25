@@ -88,7 +88,10 @@ mod tests {
     use crate::types::{DataType, Value};
 
     fn col(vals: &[Option<i64>]) -> Column {
-        let values: Vec<Value> = vals.iter().map(|v| v.map_or(Value::Null, Value::Int64)).collect();
+        let values: Vec<Value> = vals
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Int64))
+            .collect();
         Column::from_values(&DataType::Int64, &values).unwrap()
     }
 

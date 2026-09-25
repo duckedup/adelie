@@ -76,11 +76,17 @@ fn stream<'a>(
             if let Some(pred) = &spec.predicate {
                 pred.data_type(&fields)?;
                 let pred = pred.clone();
-                ops.push(Arc::new(move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
-                    Ok(Box::new(Filter::new(pred.clone())) as Box<dyn Operator>)
-                }));
+                ops.push(Arc::new(
+                    move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
+                        Ok(Box::new(Filter::new(pred.clone())) as Box<dyn Operator>)
+                    },
+                ));
             }
-            Ok(Stream { source, ops, fields })
+            Ok(Stream {
+                source,
+                ops,
+                fields,
+            })
         }
 
         Plan::Values { fields, batches } => Ok(Stream {
@@ -93,25 +99,35 @@ fn stream<'a>(
             let mut s = stream(input, src, ctx, threads, stats)?;
             predicate.data_type(&s.fields)?;
             let predicate = predicate.clone();
-            s.ops.push(Arc::new(move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
-                Ok(Box::new(Filter::new(predicate.clone())) as Box<dyn Operator>)
-            }));
+            s.ops.push(Arc::new(
+                move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
+                    Ok(Box::new(Filter::new(predicate.clone())) as Box<dyn Operator>)
+                },
+            ));
             Ok(s)
         }
 
         Plan::Project { input, exprs } => {
             let mut s = stream(input, src, ctx, threads, stats)?;
             let input_fields = s.fields.clone();
-            let new_fields = Project::new(exprs.clone(), &input_fields)?.fields().to_vec();
+            let new_fields = Project::new(exprs.clone(), &input_fields)?
+                .fields()
+                .to_vec();
             let exprs = exprs.clone();
-            s.ops.push(Arc::new(move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
-                Ok(Box::new(Project::new(exprs.clone(), &input_fields)?) as Box<dyn Operator>)
-            }));
+            s.ops.push(Arc::new(
+                move |_ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
+                    Ok(Box::new(Project::new(exprs.clone(), &input_fields)?) as Box<dyn Operator>)
+                },
+            ));
             s.fields = new_fields;
             Ok(s)
         }
 
-        Plan::Aggregate { input, group_by, aggs } => {
+        Plan::Aggregate {
+            input,
+            group_by,
+            aggs,
+        } => {
             let input_stream = stream(input, src, ctx, threads, stats)?;
             let input_fields = input_stream.fields.clone();
             let group_by = group_by.clone();
@@ -119,9 +135,10 @@ fn stream<'a>(
             let out_fields = HashAggregateSink::new(&input_fields, group_by.clone(), aggs.clone())?
                 .fields()
                 .to_vec();
-            let sink: HashAggregateSink = run_stream(input_stream, ctx, threads, stats, move || {
-                HashAggregateSink::new(&input_fields, group_by.clone(), aggs.clone())
-            })?;
+            let sink: HashAggregateSink =
+                run_stream(input_stream, ctx, threads, stats, move || {
+                    HashAggregateSink::new(&input_fields, group_by.clone(), aggs.clone())
+                })?;
             let batches = sink.finish(ctx)?;
             Ok(Stream {
                 source: Box::new(BatchSource::new(out_fields.clone(), batches)),
@@ -130,7 +147,12 @@ fn stream<'a>(
             })
         }
 
-        Plan::Join { left, right, kind, on } => {
+        Plan::Join {
+            left,
+            right,
+            kind,
+            on,
+        } => {
             let right_stream = stream(right, src, ctx, threads, stats)?;
             let right_fields = right_stream.fields.clone();
             let left_stream = stream(left, src, ctx, threads, stats)?;
@@ -154,22 +176,37 @@ fn stream<'a>(
 
             let build_fields = right_fields.clone();
             let build_keys = right_keys.clone();
-            let build_sink: JoinBuildSink = run_stream(right_stream, ctx, threads, stats, move || {
-                Ok(JoinBuildSink::new(build_fields.clone(), build_keys.clone()))
-            })?;
+            let build_sink: JoinBuildSink =
+                run_stream(right_stream, ctx, threads, stats, move || {
+                    Ok(JoinBuildSink::new(build_fields.clone(), build_keys.clone()))
+                })?;
             let table = Arc::new(build_sink.into_table(ctx)?);
 
             // Built once outside the factory to type-check `on` and compute the joined fields.
-            let probe_fields = HashJoinProbe::new(Arc::clone(&table), &left_fields, left_keys.clone(), *kind, ctx)?
-                .fields()
-                .to_vec();
+            let probe_fields = HashJoinProbe::new(
+                Arc::clone(&table),
+                &left_fields,
+                left_keys.clone(),
+                *kind,
+                ctx,
+            )?
+            .fields()
+            .to_vec();
 
             let mut s = left_stream;
             let kind = *kind;
-            s.ops.push(Arc::new(move |ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
-                let probe = HashJoinProbe::new(Arc::clone(&table), &left_fields, left_keys.clone(), kind, ctx)?;
-                Ok(Box::new(probe) as Box<dyn Operator>)
-            }));
+            s.ops.push(Arc::new(
+                move |ctx: &ExecContext| -> Result<Box<dyn Operator>, ExecError> {
+                    let probe = HashJoinProbe::new(
+                        Arc::clone(&table),
+                        &left_fields,
+                        left_keys.clone(),
+                        kind,
+                        ctx,
+                    )?;
+                    Ok(Box::new(probe) as Box<dyn Operator>)
+                },
+            ));
             s.fields = probe_fields;
             Ok(s)
         }
@@ -209,7 +246,11 @@ fn stream<'a>(
             })
         }
 
-        Plan::Limit { input, limit, offset } => {
+        Plan::Limit {
+            input,
+            limit,
+            offset,
+        } => {
             let input_stream = stream(input, src, ctx, threads, stats)?;
             let fields = input_stream.fields.clone();
             let out_fields = fields.clone();
@@ -280,8 +321,9 @@ fn materialize(
     stats: &mut ScanStats,
 ) -> Result<Vec<Batch>, ExecError> {
     let fields = s.fields.clone();
-    let sink: CollectSink =
-        run_stream(s, ctx, threads, stats, move || Ok(CollectSink::new(fields.clone())))?;
+    let sink: CollectSink = run_stream(s, ctx, threads, stats, move || {
+        Ok(CollectSink::new(fields.clone()))
+    })?;
     sink.finish(ctx)
 }
 
@@ -319,7 +361,11 @@ mod tests {
 
     fn int_batch(f: &Field, values: &[i64]) -> Batch {
         let vals: Vec<Value> = values.iter().copied().map(Value::Int64).collect();
-        Batch::new(vec![f.clone()], vec![Column::from_values(&f.ty, &vals).unwrap()]).unwrap()
+        Batch::new(
+            vec![f.clone()],
+            vec![Column::from_values(&f.ty, &vals).unwrap()],
+        )
+        .unwrap()
     }
 
     fn int_values(batches: &[Batch], col: usize) -> Vec<i64> {
@@ -347,8 +393,15 @@ mod tests {
             }
         }
 
-        fn with_table(mut self, db: &str, table: &str, fields: Vec<Field>, batches: Vec<Batch>) -> Self {
-            self.tables.insert((db.to_string(), table.to_string()), (fields, batches));
+        fn with_table(
+            mut self,
+            db: &str,
+            table: &str,
+            fields: Vec<Field>,
+            batches: Vec<Batch>,
+        ) -> Self {
+            self.tables
+                .insert((db.to_string(), table.to_string()), (fields, batches));
             self
         }
     }
@@ -362,7 +415,9 @@ mod tests {
             let (fields, batches) = self
                 .tables
                 .get(&(spec.db.clone(), spec.table.clone()))
-                .ok_or_else(|| ExecError::Plan(format!("unknown table {}.{}", spec.db, spec.table)))?;
+                .ok_or_else(|| {
+                    ExecError::Plan(format!("unknown table {}.{}", spec.db, spec.table))
+                })?;
             let mut idxs = Vec::with_capacity(spec.columns.len());
             let mut out_fields = Vec::with_capacity(spec.columns.len());
             for name in &spec.columns {
@@ -405,7 +460,12 @@ mod tests {
     #[test]
     fn scan_variant_reads_the_source() {
         let f = field("a", DataType::Int64);
-        let src = FakeSource::new().with_table("d", "t", vec![f.clone()], vec![int_batch(&f, &[1, 2, 3])]);
+        let src = FakeSource::new().with_table(
+            "d",
+            "t",
+            vec![f.clone()],
+            vec![int_batch(&f, &[1, 2, 3])],
+        );
         let plan = scan("d", "t", &["a"], None);
         let out = execute(&src, &plan, &ExecOptions::default()).unwrap();
         assert_eq!(out.fields, vec![f]);
@@ -432,7 +492,11 @@ mod tests {
             fields: vec![f.clone()],
             batches: vec![int_batch(&f, &[1, 2, 3])],
         };
-        let predicate = Expr::cmp(CmpOp::Gt, Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64));
+        let predicate = Expr::cmp(
+            CmpOp::Gt,
+            Expr::col(0),
+            Expr::lit(Value::Int64(1), DataType::Int64),
+        );
         let plan = Plan::Filter {
             input: Box::new(input),
             predicate,
@@ -536,7 +600,8 @@ mod tests {
     #[test]
     fn union_all_variant_of_a_scan_and_values() {
         let f = field("a", DataType::Int64);
-        let src = FakeSource::new().with_table("d", "t", vec![f.clone()], vec![int_batch(&f, &[1])]);
+        let src =
+            FakeSource::new().with_table("d", "t", vec![f.clone()], vec![int_batch(&f, &[1])]);
         let scan_plan = scan("d", "t", &["a"], None);
         let values_plan = Plan::Values {
             fields: vec![f.clone()],
@@ -566,7 +631,8 @@ mod tests {
             vec![lk.clone(), lv.clone()],
             vec![
                 Column::from_values(&DataType::Int64, &[Value::Int64(1), Value::Int64(2)]).unwrap(),
-                Column::from_values(&DataType::Int64, &[Value::Int64(10), Value::Int64(20)]).unwrap(),
+                Column::from_values(&DataType::Int64, &[Value::Int64(10), Value::Int64(20)])
+                    .unwrap(),
             ],
         )
         .unwrap();
@@ -610,7 +676,11 @@ mod tests {
             vec![f.clone()],
             vec![int_batch(&f, &[1, 1, 2, 2, 2, 3])],
         );
-        let predicate = Expr::cmp(CmpOp::Ne, Expr::col(0), Expr::lit(Value::Int64(3), DataType::Int64));
+        let predicate = Expr::cmp(
+            CmpOp::Ne,
+            Expr::col(0),
+            Expr::lit(Value::Int64(3), DataType::Int64),
+        );
         let plan = Plan::Limit {
             input: Box::new(Plan::Sort {
                 input: Box::new(Plan::Aggregate {
@@ -638,8 +708,17 @@ mod tests {
     fn scan_predicate_is_always_filtered_even_if_the_source_ignores_it() {
         // Falsify: this fails if `execute` trusts the scan to filter.
         let f = field("a", DataType::Int64);
-        let src = FakeSource::new().with_table("d", "t", vec![f.clone()], vec![int_batch(&f, &[1, 2, 3])]);
-        let predicate = Expr::cmp(CmpOp::Gt, Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64));
+        let src = FakeSource::new().with_table(
+            "d",
+            "t",
+            vec![f.clone()],
+            vec![int_batch(&f, &[1, 2, 3])],
+        );
+        let predicate = Expr::cmp(
+            CmpOp::Gt,
+            Expr::col(0),
+            Expr::lit(Value::Int64(1), DataType::Int64),
+        );
         let plan = scan("d", "t", &["a"], Some(predicate));
         let out = execute(&src, &plan, &ExecOptions::default()).unwrap();
         assert_eq!(int_values(&out.batches, 0), vec![2, 3]);

@@ -57,7 +57,9 @@ pub(crate) fn filter(col: &Column, keep: &Bitmap) -> Column {
         keep.len(),
         col.len()
     );
-    let indices: Vec<u32> = (0..col.len() as u32).filter(|&i| keep.get(i as usize)).collect();
+    let indices: Vec<u32> = (0..col.len() as u32)
+        .filter(|&i| keep.get(i as usize))
+        .collect();
     take(col, &indices)
 }
 
@@ -167,11 +169,17 @@ fn build_by_index(col: &Column, n: usize, index_at: impl Fn(usize) -> Option<usi
         }
         ColumnValues::String { offsets, data } => {
             let (o, d) = take_varwidth(offsets, data, n, &index_at, &mut validity, col);
-            OwnedValues::String { offsets: o, data: d }
+            OwnedValues::String {
+                offsets: o,
+                data: d,
+            }
         }
         ColumnValues::Bytes { offsets, data } => {
             let (o, d) = take_varwidth(offsets, data, n, &index_at, &mut validity, col);
-            OwnedValues::Bytes { offsets: o, data: d }
+            OwnedValues::Bytes {
+                offsets: o,
+                data: d,
+            }
         }
         ColumnValues::List { .. } => unreachable!("LIST handled above"),
     };
@@ -302,7 +310,11 @@ mod tests {
         let b2 = Batch::new(vec![field.clone()], vec![col.slice(half, n - half)]).unwrap();
         let combined = concat_batches(&[field], &[b1, b2]).unwrap();
         for i in 0..n {
-            assert_eq!(combined.column(0).get(i), col.get(i), "concat row {i} of {ty}");
+            assert_eq!(
+                combined.column(0).get(i),
+                col.get(i),
+                "concat row {i} of {ty}"
+            );
         }
     }
 
@@ -317,8 +329,14 @@ mod tests {
                 Value::Bool(false),
             ],
         );
-        check_take_filter_concat(&DataType::Int64, &(0..6).map(Value::Int64).collect::<Vec<_>>());
-        check_take_filter_concat(&DataType::UInt64, &(0..6).map(Value::UInt64).collect::<Vec<_>>());
+        check_take_filter_concat(
+            &DataType::Int64,
+            &(0..6).map(Value::Int64).collect::<Vec<_>>(),
+        );
+        check_take_filter_concat(
+            &DataType::UInt64,
+            &(0..6).map(Value::UInt64).collect::<Vec<_>>(),
+        );
         check_take_filter_concat(
             &DataType::Float64,
             &(0..6).map(|i| Value::Float64(i as f64)).collect::<Vec<_>>(),
@@ -338,19 +356,29 @@ mod tests {
         );
         check_take_filter_concat(
             &DataType::Bytes,
-            &(0..6).map(|i| Value::Bytes(vec![i as u8])).collect::<Vec<_>>(),
+            &(0..6)
+                .map(|i| Value::Bytes(vec![i as u8]))
+                .collect::<Vec<_>>(),
         );
         check_take_filter_concat(
             &DataType::Timestamp,
             &(0..6).map(Value::Timestamp).collect::<Vec<_>>(),
         );
-        check_take_filter_concat(&DataType::Date, &(0..6).map(Value::Date).collect::<Vec<_>>());
+        check_take_filter_concat(
+            &DataType::Date,
+            &(0..6).map(Value::Date).collect::<Vec<_>>(),
+        );
         check_take_filter_concat(
             &DataType::Uuid,
-            &(0..6).map(|i| Value::Uuid([i as u8; 16])).collect::<Vec<_>>(),
+            &(0..6)
+                .map(|i| Value::Uuid([i as u8; 16]))
+                .collect::<Vec<_>>(),
         );
         let ip = Ip::from(IpAddr::from([127, 0, 0, 1]));
-        check_take_filter_concat(&DataType::Ip, &(0..6).map(|_| Value::Ip(ip)).collect::<Vec<_>>());
+        check_take_filter_concat(
+            &DataType::Ip,
+            &(0..6).map(|_| Value::Ip(ip)).collect::<Vec<_>>(),
+        );
         let list_ty = DataType::list(DataType::Int64).unwrap();
         check_take_filter_concat(
             &list_ty,
@@ -412,7 +440,11 @@ mod tests {
             )
             .unwrap()
         };
-        let batches = vec![make_batch(0, 3000), make_batch(3000, 3000), make_batch(6000, 3000)];
+        let batches = vec![
+            make_batch(0, 3000),
+            make_batch(3000, 3000),
+            make_batch(6000, 3000),
+        ];
         let out = rechunk(&[field], batches).unwrap();
         let total: usize = out.iter().map(Batch::rows).sum();
         assert_eq!(total, 9000);

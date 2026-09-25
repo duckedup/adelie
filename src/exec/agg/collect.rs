@@ -147,7 +147,9 @@ pub(crate) struct QuantileAccumulator {
 impl QuantileAccumulator {
     pub(crate) fn new(ty: &DataType, q: f64) -> Result<Self, ExecError> {
         if q.is_nan() || !(0.0..=1.0).contains(&q) {
-            return Err(ExecError::Invalid(format!("quantile q {q} out of range [0,1]")));
+            return Err(ExecError::Invalid(format!(
+                "quantile q {q} out of range [0,1]"
+            )));
         }
         let supported = matches!(
             ty,
@@ -400,10 +402,7 @@ impl GroupsAccumulator for HistogramAccumulator {
                 .unwrap_or(Value::Null);
             let c = cur.uvarint().map_err(|e| invalid("histogram", e))?;
             let key = self.key_of(&v);
-            self.states[group]
-                .entry(key)
-                .or_insert_with(|| (v, 0))
-                .1 += c;
+            self.states[group].entry(key).or_insert_with(|| (v, 0)).1 += c;
         }
         Ok(())
     }
@@ -411,7 +410,11 @@ impl GroupsAccumulator for HistogramAccumulator {
     fn byte_size(&self) -> usize {
         self.states
             .iter()
-            .map(|m| m.iter().map(|(k, _)| k.capacity() + size_of::<Value>() + 8).sum::<usize>())
+            .map(|m| {
+                m.keys()
+                    .map(|k| k.capacity() + size_of::<Value>() + 8)
+                    .sum::<usize>()
+            })
             .sum()
     }
 
@@ -431,7 +434,10 @@ mod tests {
 
     #[test]
     fn list_agg_1_null_2_keeps_nulls_and_order() {
-        let c = col(&DataType::Int64, &[Value::Int64(1), Value::Null, Value::Int64(2)]);
+        let c = col(
+            &DataType::Int64,
+            &[Value::Int64(1), Value::Null, Value::Int64(2)],
+        );
         let groups = [0, 0, 0];
         let mut acc = ListAggAccumulator::new(&DataType::Int64).unwrap();
         acc.update(&groups, 1, &[&c], None).unwrap();
@@ -478,7 +484,12 @@ mod tests {
     fn quantile_median_of_four_values() {
         let c = col(
             &DataType::Int64,
-            &[Value::Int64(1), Value::Int64(2), Value::Int64(3), Value::Int64(4)],
+            &[
+                Value::Int64(1),
+                Value::Int64(2),
+                Value::Int64(3),
+                Value::Int64(4),
+            ],
         );
         let groups = [0, 0, 0, 0];
         let mut acc = QuantileAccumulator::new(&DataType::Int64, 0.5).unwrap();
@@ -490,7 +501,12 @@ mod tests {
     fn quantile_zero_is_min_one_is_max() {
         let c = col(
             &DataType::Int64,
-            &[Value::Int64(1), Value::Int64(2), Value::Int64(3), Value::Int64(4)],
+            &[
+                Value::Int64(1),
+                Value::Int64(2),
+                Value::Int64(3),
+                Value::Int64(4),
+            ],
         );
         let groups = [0, 0, 0, 0];
         let mut lo = QuantileAccumulator::new(&DataType::Int64, 0.0).unwrap();
@@ -591,10 +607,14 @@ mod tests {
 
     #[test]
     fn list_agg_quantile_histogram_merge_encoded_rejects_garbage() {
-        assert_merge_encoded_rejects_garbage(|| Box::new(ListAggAccumulator::new(&DataType::Int64).unwrap()));
+        assert_merge_encoded_rejects_garbage(|| {
+            Box::new(ListAggAccumulator::new(&DataType::Int64).unwrap())
+        });
         assert_merge_encoded_rejects_garbage(|| {
             Box::new(QuantileAccumulator::new(&DataType::Int64, 0.5).unwrap())
         });
-        assert_merge_encoded_rejects_garbage(|| Box::new(HistogramAccumulator::new(&DataType::Int64).unwrap()));
+        assert_merge_encoded_rejects_garbage(|| {
+            Box::new(HistogramAccumulator::new(&DataType::Int64).unwrap())
+        });
     }
 }

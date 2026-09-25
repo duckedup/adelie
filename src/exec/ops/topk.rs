@@ -83,7 +83,11 @@ mod tests {
 
     fn int_batch(f: &Field, values: &[i64]) -> Batch {
         let vals: Vec<Value> = values.iter().copied().map(Value::Int64).collect();
-        Batch::new(vec![f.clone()], vec![Column::from_values(&f.ty, &vals).unwrap()]).unwrap()
+        Batch::new(
+            vec![f.clone()],
+            vec![Column::from_values(&f.ty, &vals).unwrap()],
+        )
+        .unwrap()
     }
 
     fn int_values(batches: &[Batch]) -> Vec<i64> {

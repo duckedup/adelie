@@ -167,7 +167,7 @@ mod tests {
             descending: false,
             nulls_first: true,
         };
-        let out = sort_batches(&fields, &[batch.clone()], &[first], &ctx).unwrap();
+        let out = sort_batches(&fields, std::slice::from_ref(&batch), &[first], &ctx).unwrap();
         assert_eq!(
             one_col_values(&out, 0),
             vec![Value::Null, Value::Int64(1), Value::Int64(2)]
@@ -226,7 +226,9 @@ mod tests {
         let mut sink = SortSink::new(fields.to_vec(), vec![SortKey::asc(0)]);
         let batch = Batch::new(
             fields.to_vec(),
-            vec![Column::from_values(&DataType::Int64, &[Value::Int64(1), Value::Int64(2)]).unwrap()],
+            vec![
+                Column::from_values(&DataType::Int64, &[Value::Int64(1), Value::Int64(2)]).unwrap(),
+            ],
         )
         .unwrap();
         let err = sink.push(&ctx, batch).unwrap_err();

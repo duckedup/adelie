@@ -41,10 +41,12 @@ pub(crate) trait GroupsAccumulator: Send + 'static {
     fn data_type(&self) -> DataType;
 
     /// Group `g`'s partial state: first byte is the format version (1). The rollup contract
-    /// (D0015).
+    /// (D0015). No caller until rollups (adelie-zit.2); every accumulator's tests exercise it.
+    #[allow(dead_code)]
     fn encode_state(&self, group: usize, out: &mut Vec<u8>);
 
     /// Merges an encoded state into group `g`. Malformed bytes are `Invalid`, never a panic.
+    #[allow(dead_code)] // rollups (adelie-zit.2) are the first caller
     fn merge_encoded(
         &mut self,
         group: usize,
@@ -87,12 +89,16 @@ pub(crate) fn accumulator(
         AggFunc::Avg => Box::new(basic::AvgAccumulator::new(&arg_types[0])?),
         AggFunc::Min => Box::new(basic::MinMaxAccumulator::new(&arg_types[0], false)?),
         AggFunc::Max => Box::new(basic::MinMaxAccumulator::new(&arg_types[0], true)?),
-        AggFunc::ArgMin => {
-            Box::new(basic::ArgAccumulator::new(&arg_types[0], &arg_types[1], false)?)
-        }
-        AggFunc::ArgMax => {
-            Box::new(basic::ArgAccumulator::new(&arg_types[0], &arg_types[1], true)?)
-        }
+        AggFunc::ArgMin => Box::new(basic::ArgAccumulator::new(
+            &arg_types[0],
+            &arg_types[1],
+            false,
+        )?),
+        AggFunc::ArgMax => Box::new(basic::ArgAccumulator::new(
+            &arg_types[0],
+            &arg_types[1],
+            true,
+        )?),
         AggFunc::ListAgg => Box::new(collect::ListAggAccumulator::new(&arg_types[0])?),
         AggFunc::Quantile(q) => Box::new(collect::QuantileAccumulator::new(&arg_types[0], *q)?),
         AggFunc::Histogram => Box::new(collect::HistogramAccumulator::new(&arg_types[0])?),
@@ -138,7 +144,9 @@ mod tests {
 
     #[test]
     fn sum_of_string_is_plan() {
-        let err = accumulator(&AggFunc::Sum, &[DataType::String]).err().unwrap();
+        let err = accumulator(&AggFunc::Sum, &[DataType::String])
+            .err()
+            .unwrap();
         assert!(matches!(err, ExecError::Plan(_)));
     }
 

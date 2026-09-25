@@ -145,7 +145,9 @@ impl Expr {
             Expr::Not(e) => {
                 let t = e.data_type(input)?;
                 if t != DataType::Bool {
-                    return Err(ExecError::Plan(format!("NOT operand must be BOOL, found {t}")));
+                    return Err(ExecError::Plan(format!(
+                        "NOT operand must be BOOL, found {t}"
+                    )));
                 }
                 Ok(DataType::Bool)
             }
@@ -195,7 +197,10 @@ impl Expr {
                 t @ (DataType::Int64 | DataType::Float64 | DataType::Decimal(_)) => Ok(t),
                 other => Err(ExecError::Plan(format!("NEG does not apply to {other}"))),
             },
-            Expr::Case { branches, otherwise } => {
+            Expr::Case {
+                branches,
+                otherwise,
+            } => {
                 if branches.is_empty() {
                     return Err(ExecError::Plan("CASE needs at least one branch".into()));
                 }
@@ -282,7 +287,10 @@ impl Expr {
                 high.columns(out);
             }
             Expr::Like { expr, .. } => expr.columns(out),
-            Expr::Case { branches, otherwise } => {
+            Expr::Case {
+                branches,
+                otherwise,
+            } => {
                 for (cond, res) in branches {
                     cond.columns(out);
                     res.columns(out);
@@ -538,9 +546,15 @@ mod tests {
             DataType::decimal(3, 1).unwrap(),
         ]);
         let add = Expr::Arith(ArithOp::Add, Box::new(Expr::col(0)), Box::new(Expr::col(1)));
-        assert_eq!(add.data_type(&input).unwrap(), DataType::decimal(6, 2).unwrap());
+        assert_eq!(
+            add.data_type(&input).unwrap(),
+            DataType::decimal(6, 2).unwrap()
+        );
         let sub = Expr::Arith(ArithOp::Sub, Box::new(Expr::col(0)), Box::new(Expr::col(1)));
-        assert_eq!(sub.data_type(&input).unwrap(), DataType::decimal(6, 2).unwrap());
+        assert_eq!(
+            sub.data_type(&input).unwrap(),
+            DataType::decimal(6, 2).unwrap()
+        );
     }
 
     #[test]
@@ -550,7 +564,10 @@ mod tests {
             DataType::decimal(3, 1).unwrap(),
         ]);
         let mul = Expr::Arith(ArithOp::Mul, Box::new(Expr::col(0)), Box::new(Expr::col(1)));
-        assert_eq!(mul.data_type(&input).unwrap(), DataType::decimal(8, 3).unwrap());
+        assert_eq!(
+            mul.data_type(&input).unwrap(),
+            DataType::decimal(8, 3).unwrap()
+        );
 
         let wide = fields(&[
             DataType::decimal(38, 30).unwrap(),
@@ -569,7 +586,10 @@ mod tests {
         let div = Expr::Arith(ArithOp::Div, Box::new(Expr::col(0)), Box::new(Expr::col(1)));
         assert_eq!(div.data_type(&input).unwrap(), DataType::Float64);
         let m = Expr::Arith(ArithOp::Mod, Box::new(Expr::col(0)), Box::new(Expr::col(1)));
-        assert_eq!(m.data_type(&input).unwrap(), DataType::decimal(6, 2).unwrap());
+        assert_eq!(
+            m.data_type(&input).unwrap(),
+            DataType::decimal(6, 2).unwrap()
+        );
     }
 
     #[test]
@@ -611,16 +631,25 @@ mod tests {
             branches: vec![(Expr::col(1), Expr::lit(Value::Int64(1), DataType::Int64))],
             otherwise: None,
         };
-        assert!(matches!(bad_cond.data_type(&input), Err(ExecError::Plan(_))));
+        assert!(matches!(
+            bad_cond.data_type(&input),
+            Err(ExecError::Plan(_))
+        ));
 
         let mismatched = Expr::Case {
             branches: vec![
                 (Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64)),
-                (Expr::col(0), Expr::lit(Value::String("x".into()), DataType::String)),
+                (
+                    Expr::col(0),
+                    Expr::lit(Value::String("x".into()), DataType::String),
+                ),
             ],
             otherwise: None,
         };
-        assert!(matches!(mismatched.data_type(&input), Err(ExecError::Plan(_))));
+        assert!(matches!(
+            mismatched.data_type(&input),
+            Err(ExecError::Plan(_))
+        ));
     }
 
     #[test]

@@ -156,22 +156,6 @@ mod tests {
         ))
     }
 
-    fn schema() -> Vec<Field> {
-        vec![Field {
-            name: "a".to_string(),
-            ty: DataType::Int64,
-        }]
-    }
-
-    fn batch(vals: &[i64]) -> Batch {
-        let v: Vec<Value> = vals.iter().copied().map(Value::Int64).collect();
-        Batch::new(
-            schema(),
-            vec![Column::from_values(&DataType::Int64, &v).unwrap()],
-        )
-        .unwrap()
-    }
-
     #[test]
     #[cfg_attr(miri, ignore)] // touches the real filesystem
     fn a_missing_segment_file_is_snapshot_expired() {

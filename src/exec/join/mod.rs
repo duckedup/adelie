@@ -7,5 +7,5 @@
 mod build;
 mod probe;
 
-pub(crate) use build::{JoinBuildSink, JoinTable};
+pub(crate) use build::JoinBuildSink;
 pub(crate) use probe::HashJoinProbe;

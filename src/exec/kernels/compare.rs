@@ -3,8 +3,8 @@
 
 use std::cmp::Ordering;
 
-use crate::exec::{Column, ExecError};
 use crate::exec::expr::CmpOp;
+use crate::exec::{Column, ExecError};
 use crate::types::{DataType, Value, sql_eq, total_cmp};
 
 use super::boolean::BoolBuilder;
@@ -118,7 +118,10 @@ mod tests {
     use crate::types::Decimal;
 
     fn int_col(vals: &[Option<i64>]) -> Column {
-        let values: Vec<Value> = vals.iter().map(|v| v.map_or(Value::Null, Value::Int64)).collect();
+        let values: Vec<Value> = vals
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Int64))
+            .collect();
         Column::from_values(&DataType::Int64, &values).unwrap()
     }
 
@@ -145,8 +148,8 @@ mod tests {
         ];
         for (op, scalar, expected) in cases {
             let out = compare_scalar(&col, op, &Value::Int64(scalar)).unwrap();
-            for i in 0..3 {
-                assert_eq!(bool_at(&out, i), expected[i], "{op:?} row {i}");
+            for (i, want) in expected.iter().enumerate() {
+                assert_eq!(bool_at(&out, i), *want, "{op:?} row {i}");
             }
         }
     }
@@ -162,7 +165,11 @@ mod tests {
         let eq_nan = compare_scalar(&col, CmpOp::Eq, &Value::Float64(f64::NAN)).unwrap();
         assert_eq!(bool_at(&eq_nan, 0), Some(false), "NaN = NaN is false");
         let gt = compare_scalar(&col, CmpOp::Gt, &Value::Float64(1e308)).unwrap();
-        assert_eq!(bool_at(&gt, 0), Some(true), "NaN > 1e308 is true (NaN is greatest)");
+        assert_eq!(
+            bool_at(&gt, 0),
+            Some(true),
+            "NaN > 1e308 is true (NaN is greatest)"
+        );
         let eq_zero = compare_scalar(&col, CmpOp::Eq, &Value::Float64(0.0)).unwrap();
         assert_eq!(bool_at(&eq_zero, 1), Some(true), "-0.0 = 0.0 is true");
     }

@@ -76,7 +76,11 @@ fn like_match(s: &[char], p: &[Token], case_insensitive: bool) -> bool {
 
 /// The BOOL result, NULL where `col` is NULL. `col` must be STRING (`eval` only calls this
 /// after typing checks it).
-pub(crate) fn like(col: &Column, pattern: &str, case_insensitive: bool) -> Result<Column, ExecError> {
+pub(crate) fn like(
+    col: &Column,
+    pattern: &str,
+    case_insensitive: bool,
+) -> Result<Column, ExecError> {
     if col.data_type() != &DataType::String {
         return Err(ExecError::Plan(format!(
             "LIKE operand must be STRING, found {}",

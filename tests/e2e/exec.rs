@@ -64,7 +64,10 @@ fn temp_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("adelie-e2e-exec-{tag}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "adelie-e2e-exec-{tag}-{}-{nanos}",
+        std::process::id()
+    ))
 }
 
 fn open_events(dir: &Path, o: StoreOptions) -> Store {
@@ -116,7 +119,10 @@ fn gen_events(ids: Range<u64>) -> Batch {
 /// Explicit `(id, svc, status, dur)` rows for tests that need specific values; `ts` still
 /// derives from `id`, like `gen_events`.
 fn events_batch(rows: &[(u64, &str, i64, f64)]) -> Batch {
-    let ts: Vec<Value> = rows.iter().map(|&(id, ..)| Value::Timestamp(ts_of(id))).collect();
+    let ts: Vec<Value> = rows
+        .iter()
+        .map(|&(id, ..)| Value::Timestamp(ts_of(id)))
+        .collect();
     let svc: Vec<Value> = rows
         .iter()
         .map(|&(_, s, ..)| Value::String(s.to_string()))
@@ -165,8 +171,14 @@ fn svcs_schema() -> Vec<Field> {
 }
 
 fn svcs_batch(rows: &[(&str, &str)]) -> Batch {
-    let svc: Vec<Value> = rows.iter().map(|&(s, _)| Value::String(s.to_string())).collect();
-    let team: Vec<Value> = rows.iter().map(|&(_, t)| Value::String(t.to_string())).collect();
+    let svc: Vec<Value> = rows
+        .iter()
+        .map(|&(s, _)| Value::String(s.to_string()))
+        .collect();
+    let team: Vec<Value> = rows
+        .iter()
+        .map(|&(_, t)| Value::String(t.to_string()))
+        .collect();
     Batch::new(
         svcs_schema(),
         vec![
@@ -280,7 +292,10 @@ fn deleted_rows_vanish_and_later_writes_survive() {
     let dir = temp_dir("delete");
     let store = open_events(&dir, opts());
     store
-        .write(&table(), events_batch(&[(0, "api", 500, 1.0), (1, "api", 200, 2.0)]))
+        .write(
+            &table(),
+            events_batch(&[(0, "api", 500, 1.0), (1, "api", 200, 2.0)]),
+        )
         .unwrap();
     store.flush().unwrap();
     store
@@ -293,19 +308,37 @@ fn deleted_rows_vanish_and_later_writes_survive() {
             }],
         )
         .unwrap();
-    store.write(&table(), events_batch(&[(2, "api", 500, 3.0)])).unwrap();
+    store
+        .write(&table(), events_batch(&[(2, "api", 500, 3.0)]))
+        .unwrap();
     store.flush().unwrap();
 
     let view = store.snapshot();
     let scanned = batch_rows(&view.scan(&table()).unwrap());
     assert_eq!(scanned.len(), 2);
-    assert_eq!(scanned.iter().filter(|r| status_of_row(r) == 500).count(), 1);
-    assert_eq!(scanned.iter().filter(|r| status_of_row(r) == 200).count(), 1);
+    assert_eq!(
+        scanned.iter().filter(|r| status_of_row(r) == 500).count(),
+        1
+    );
+    assert_eq!(
+        scanned.iter().filter(|r| status_of_row(r) == 200).count(),
+        1
+    );
 
-    let queried = rows(&view.query(&all_cols_scan(None), &ExecOptions::default()).unwrap());
+    let queried = rows(
+        &view
+            .query(&all_cols_scan(None), &ExecOptions::default())
+            .unwrap(),
+    );
     assert_eq!(queried.len(), 2);
-    assert_eq!(queried.iter().filter(|r| status_of_row(r) == 500).count(), 1);
-    assert_eq!(queried.iter().filter(|r| status_of_row(r) == 200).count(), 1);
+    assert_eq!(
+        queried.iter().filter(|r| status_of_row(r) == 500).count(),
+        1
+    );
+    assert_eq!(
+        queried.iter().filter(|r| status_of_row(r) == 200).count(),
+        1
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -319,12 +352,18 @@ fn pruning_skips_segments_without_changing_results() {
     let store = open_events(&dir, opts());
     for seg in 0..4u64 {
         let start = seg * 10;
-        store.write(&table(), gen_events(start..start + 10)).unwrap();
+        store
+            .write(&table(), gen_events(start..start + 10))
+            .unwrap();
         store.flush().unwrap();
     }
     let view = store.snapshot();
 
-    let pred = Expr::cmp(CmpOp::Ge, Expr::col(ID_IDX), Expr::lit(Value::UInt64(30), DataType::UInt64));
+    let pred = Expr::cmp(
+        CmpOp::Ge,
+        Expr::col(ID_IDX),
+        Expr::lit(Value::UInt64(30), DataType::UInt64),
+    );
     let pruned = view
         .query(&all_cols_scan(Some(pred.clone())), &ExecOptions::default())
         .unwrap();
@@ -349,13 +388,21 @@ fn scan_predicate_is_always_applied() {
     let store = open_events(&dir, opts());
     for seg in 0..4u64 {
         let start = seg * 10;
-        store.write(&table(), gen_events(start..start + 10)).unwrap();
+        store
+            .write(&table(), gen_events(start..start + 10))
+            .unwrap();
         store.flush().unwrap();
     }
     let view = store.snapshot();
 
-    let pred = Expr::cmp(CmpOp::Eq, Expr::col(STATUS_IDX), Expr::lit(Value::Int64(404), DataType::Int64));
-    let result = view.query(&all_cols_scan(Some(pred)), &ExecOptions::default()).unwrap();
+    let pred = Expr::cmp(
+        CmpOp::Eq,
+        Expr::col(STATUS_IDX),
+        Expr::lit(Value::Int64(404), DataType::Int64),
+    );
+    let result = view
+        .query(&all_cols_scan(Some(pred)), &ExecOptions::default())
+        .unwrap();
     // 404 sits inside every segment's [200, 500] status range: a correct scan prunes nothing.
     assert_eq!(result.stats.scan.segments_pruned, 0);
 
@@ -377,7 +424,9 @@ fn aggregate_matches_across_thread_counts() {
     let store = open_events(&dir, opts());
     for seg in 0..4u64 {
         let start = seg * 25;
-        store.write(&table(), gen_events(start..start + 25)).unwrap();
+        store
+            .write(&table(), gen_events(start..start + 25))
+            .unwrap();
         store.flush().unwrap();
     }
     let view = store.snapshot();
@@ -468,10 +517,22 @@ fn aggregate_matches_across_thread_counts() {
     };
 
     let one = view
-        .query(&plan, &ExecOptions { threads: 1, ..ExecOptions::default() })
+        .query(
+            &plan,
+            &ExecOptions {
+                threads: 1,
+                ..ExecOptions::default()
+            },
+        )
         .unwrap();
     let four = view
-        .query(&plan, &ExecOptions { threads: 4, ..ExecOptions::default() })
+        .query(
+            &plan,
+            &ExecOptions {
+                threads: 4,
+                ..ExecOptions::default()
+            },
+        )
         .unwrap();
 
     // `list_agg`'s arrival order depends on the morsel scheduler's racy merge order: sort each
@@ -550,7 +611,11 @@ fn sort_topk_limit() {
         limit: Some(5),
         offset: 2,
     };
-    let got = rows(&view.query(&sort_limit_plan, &ExecOptions::default()).unwrap());
+    let got = rows(
+        &view
+            .query(&sort_limit_plan, &ExecOptions::default())
+            .unwrap(),
+    );
     assert_eq!(got, want_slice);
 
     let mut want_by_dur = batch_rows(&view.scan(&table()).unwrap());
@@ -580,7 +645,10 @@ fn hash_join_inner_and_left() {
     store.write(&table(), gen_events(0..9)).unwrap();
     // "db" (one of the three svcs in `gen_events`) is missing from `svcs` on purpose.
     store
-        .write(&svcs_table(), svcs_batch(&[("api", "core"), ("web", "core")]))
+        .write(
+            &svcs_table(),
+            svcs_batch(&[("api", "core"), ("web", "core")]),
+        )
         .unwrap();
     store.flush().unwrap();
     let view = store.snapshot();
@@ -640,14 +708,35 @@ fn union_all_concatenates() {
     store.flush().unwrap();
     let view = store.snapshot();
 
-    let pred_200 = Expr::cmp(CmpOp::Eq, Expr::col(STATUS_IDX), Expr::lit(Value::Int64(200), DataType::Int64));
-    let pred_500 = Expr::cmp(CmpOp::Eq, Expr::col(STATUS_IDX), Expr::lit(Value::Int64(500), DataType::Int64));
+    let pred_200 = Expr::cmp(
+        CmpOp::Eq,
+        Expr::col(STATUS_IDX),
+        Expr::lit(Value::Int64(200), DataType::Int64),
+    );
+    let pred_500 = Expr::cmp(
+        CmpOp::Eq,
+        Expr::col(STATUS_IDX),
+        Expr::lit(Value::Int64(500), DataType::Int64),
+    );
 
-    let q200 = view.query(&all_cols_scan(Some(pred_200.clone())), &ExecOptions::default()).unwrap();
-    let q500 = view.query(&all_cols_scan(Some(pred_500.clone())), &ExecOptions::default()).unwrap();
+    let q200 = view
+        .query(
+            &all_cols_scan(Some(pred_200.clone())),
+            &ExecOptions::default(),
+        )
+        .unwrap();
+    let q500 = view
+        .query(
+            &all_cols_scan(Some(pred_500.clone())),
+            &ExecOptions::default(),
+        )
+        .unwrap();
     let want = rows(&q200).len() + rows(&q500).len();
 
-    let union_plan = Plan::UnionAll(vec![all_cols_scan(Some(pred_200)), all_cols_scan(Some(pred_500))]);
+    let union_plan = Plan::UnionAll(vec![
+        all_cols_scan(Some(pred_200)),
+        all_cols_scan(Some(pred_500)),
+    ]);
     let got = view.query(&union_plan, &ExecOptions::default()).unwrap();
     assert_eq!(rows(&got).len(), want);
 
@@ -681,11 +770,18 @@ fn buffered_rows_are_queryable() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let seen = loop {
         let view = store.snapshot();
-        let got = rows(&view.query(&all_cols_scan(None), &ExecOptions::default()).unwrap());
+        let got = rows(
+            &view
+                .query(&all_cols_scan(None), &ExecOptions::default())
+                .unwrap(),
+        );
         if got.len() == 5 {
             break got;
         }
-        assert!(Instant::now() < deadline, "buffered rows never became visible");
+        assert!(
+            Instant::now() < deadline,
+            "buffered rows never became visible"
+        );
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(seen.len(), 5);
@@ -738,9 +834,15 @@ fn budget_exceeded_is_a_clean_error() {
         keys: vec![SortKey::asc(ID_IDX)],
     };
 
-    let tiny = ExecOptions { memory_limit: 4096, ..ExecOptions::default() };
+    let tiny = ExecOptions {
+        memory_limit: 4096,
+        ..ExecOptions::default()
+    };
     let err = view.query(&plan, &tiny).unwrap_err();
-    assert!(matches!(err, Error::Exec(ExecError::BudgetExceeded { .. })), "{err}");
+    assert!(
+        matches!(err, Error::Exec(ExecError::BudgetExceeded { .. })),
+        "{err}"
+    );
 
     let ok = view.query(&plan, &ExecOptions::default());
     assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.to_string()));
@@ -761,13 +863,22 @@ fn cancel_and_timeout() {
 
     let cancel = CancelToken::new();
     cancel.cancel();
-    let cancelled = ExecOptions { cancel, ..ExecOptions::default() };
+    let cancelled = ExecOptions {
+        cancel,
+        ..ExecOptions::default()
+    };
     let err = view.query(&plan, &cancelled).unwrap_err();
     assert!(matches!(err, Error::Exec(ExecError::Cancelled)), "{err}");
 
-    let zero_timeout = ExecOptions { timeout: Some(Duration::ZERO), ..ExecOptions::default() };
+    let zero_timeout = ExecOptions {
+        timeout: Some(Duration::ZERO),
+        ..ExecOptions::default()
+    };
     let err = view.query(&plan, &zero_timeout).unwrap_err();
-    assert!(matches!(err, Error::Exec(ExecError::Timeout { .. })), "{err}");
+    assert!(
+        matches!(err, Error::Exec(ExecError::Timeout { .. })),
+        "{err}"
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -798,10 +909,17 @@ fn expressions_end_to_end() {
                 "bucket".to_string(),
                 Expr::Case {
                     branches: vec![(
-                        Expr::cmp(CmpOp::Gt, Expr::col(DUR_IDX), Expr::lit(Value::Float64(1.0), DataType::Float64)),
+                        Expr::cmp(
+                            CmpOp::Gt,
+                            Expr::col(DUR_IDX),
+                            Expr::lit(Value::Float64(1.0), DataType::Float64),
+                        ),
                         Expr::lit(Value::String("slow".to_string()), DataType::String),
                     )],
-                    otherwise: Some(Box::new(Expr::lit(Value::String("ok".to_string()), DataType::String))),
+                    otherwise: Some(Box::new(Expr::lit(
+                        Value::String("ok".to_string()),
+                        DataType::String,
+                    ))),
                 },
             ),
             (
@@ -856,7 +974,9 @@ fn snapshot_expired_surfaces_as_its_own_error() {
     std::fs::remove_file(&seg_path).unwrap();
 
     let view = store.snapshot();
-    let err = view.query(&all_cols_scan(None), &ExecOptions::default()).unwrap_err();
+    let err = view
+        .query(&all_cols_scan(None), &ExecOptions::default())
+        .unwrap_err();
     assert!(matches!(err, Error::SnapshotExpired { .. }), "{err}");
 
     std::fs::remove_dir_all(&dir).unwrap();

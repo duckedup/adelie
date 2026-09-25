@@ -1,8 +1,8 @@
 //! The morsel scheduler (SPEC §7): a pool of `std::thread::scope` workers pulling morsels
 //! from a shared index and running one pipeline (operators + sink) to a partial result.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::exec::operator::{Operator, Sink};
 use crate::exec::{Batch, ExecContext, ExecError, MorselSource};
@@ -167,8 +167,8 @@ fn finish_chain<S: Sink>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use super::run;
@@ -286,8 +286,10 @@ mod tests {
         for threads in [1, 2, 8] {
             let source = BatchSource::new(fields.clone(), batches.clone());
             let ctx = ExecContext::new(&opts(threads));
-            let sink: SumSink =
-                run(&source, &ctx, threads, || Ok((Vec::new(), SumSink::default()))).unwrap();
+            let sink: SumSink = run(&source, &ctx, threads, || {
+                Ok((Vec::new(), SumSink::default()))
+            })
+            .unwrap();
             assert_eq!(sink.total, expected, "threads={threads}");
         }
     }
@@ -313,7 +315,8 @@ mod tests {
         fn read(&self, _morsel: usize, _ctx: &ExecContext) -> Result<Vec<Batch>, ExecError> {
             self.in_flight.fetch_add(1, Ordering::SeqCst);
             let start = Instant::now();
-            while self.in_flight.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(5)
+            while self.in_flight.load(Ordering::SeqCst) < 2
+                && start.elapsed() < Duration::from_secs(5)
             {
                 std::thread::yield_now();
             }
@@ -336,7 +339,10 @@ mod tests {
         };
         let ctx = ExecContext::new(&opts(2));
         let _: SumSink = run(&source, &ctx, 2, || Ok((Vec::new(), SumSink::default()))).unwrap();
-        assert!(source.seen_two.load(Ordering::SeqCst), "no overlap observed");
+        assert!(
+            source.seen_two.load(Ordering::SeqCst),
+            "no overlap observed"
+        );
     }
 
     #[test]
@@ -503,8 +509,10 @@ mod tests {
     fn early_stop_when_the_sink_is_done() {
         let source = CountingSource::new(make_batches(10));
         let ctx = ExecContext::new(&opts(1));
-        let _: DoneAfterTwo =
-            run(&source, &ctx, 1, || Ok((Vec::new(), DoneAfterTwo::default()))).unwrap();
+        let _: DoneAfterTwo = run(&source, &ctx, 1, || {
+            Ok((Vec::new(), DoneAfterTwo::default()))
+        })
+        .unwrap();
         assert!(source.reads.load(Ordering::SeqCst) <= 2);
     }
 

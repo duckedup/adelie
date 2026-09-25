@@ -379,8 +379,9 @@ mod tests {
         acc.grow(1);
         assert!(acc.merge_encoded(0, 1, &[]).is_err());
         assert!(acc.merge_encoded(0, 1, &[9]).is_err());
-        assert!(acc
-            .merge_encoded(0, 1, &[1, 255, 255, 255, 255, 255])
-            .is_err());
+        assert!(
+            acc.merge_encoded(0, 1, &[1, 255, 255, 255, 255, 255])
+                .is_err()
+        );
     }
 }

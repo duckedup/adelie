@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::exec::kernels;
 use crate::exec::{
-    Batch, Bitmap, Column, ExecContext, ExecError, Expr, Field, MorselSource, ScanSpec,
-    ScanStats, TableSource,
+    Batch, Bitmap, Column, ExecContext, ExecError, Expr, Field, MorselSource, ScanSpec, ScanStats,
+    TableSource,
 };
 use crate::storage::engines::engine_by_name;
 use crate::storage::manifest::{self, SchemaField, SegmentEntry, TableEntry, TableName, Tombstone};
@@ -113,8 +113,8 @@ impl<'a> TableScan<'a> {
             }
         })?;
         let _res = ctx.reserve(bytes.len())?;
-        let reader = segment::Reader::open(path.display().to_string(), bytes)
-            .map_err(|e| src(e.into()))?;
+        let reader =
+            segment::Reader::open(path.display().to_string(), bytes).map_err(|e| src(e.into()))?;
         let file_ids = seg.file_ids();
         if file_ids.len() != reader.fields().len() {
             return Err(src(Error::Usage(format!(
@@ -124,7 +124,8 @@ impl<'a> TableScan<'a> {
                 reader.fields().len()
             ))));
         }
-        let file_index = map_file_columns(seg.id, schema, file_ids, reader.fields()).map_err(src)?;
+        let file_index =
+            map_file_columns(seg.id, schema, file_ids, reader.fields()).map_err(src)?;
 
         // Decode the requested columns plus any this segment's tombstones name: a tombstone
         // predicate may reach a column the query itself never asked for.
@@ -176,9 +177,10 @@ impl<'a> TableScan<'a> {
 
                 let mut file_col_entry: HashMap<usize, usize> = HashMap::new();
                 for (entry_idx, entry) in reader.indexes().iter().enumerate() {
-                    let matches_shape = matches!(entry.kind, IndexKind::Bloom | IndexKind::ValueSet)
-                        && entry.columns.len() == 1
-                        && (entry.row_group == Some(rg) || entry.row_group.is_none());
+                    let matches_shape =
+                        matches!(entry.kind, IndexKind::Bloom | IndexKind::ValueSet)
+                            && entry.columns.len() == 1
+                            && (entry.row_group == Some(rg) || entry.row_group.is_none());
                     if matches_shape {
                         file_col_entry.entry(entry.columns[0]).or_insert(entry_idx);
                     }
@@ -296,7 +298,9 @@ impl TableSource for View {
             .ok_or_else(|| src(Error::UnknownTable(name.to_string())))?;
 
         if spec.columns.is_empty() {
-            return Err(ExecError::Plan("scan needs at least one column".to_string()));
+            return Err(ExecError::Plan(
+                "scan needs at least one column".to_string(),
+            ));
         }
         let mut columns = Vec::with_capacity(spec.columns.len());
         let mut fields = Vec::with_capacity(spec.columns.len());
@@ -805,7 +809,10 @@ mod tests {
             columns: vec!["nope".to_string()],
             predicate: None,
         };
-        assert!(matches!(view.open_scan(&bad, &ctx), Err(ExecError::Plan(_))));
+        assert!(matches!(
+            view.open_scan(&bad, &ctx),
+            Err(ExecError::Plan(_))
+        ));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

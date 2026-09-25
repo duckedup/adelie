@@ -160,8 +160,8 @@ mod tests {
             Some(false),
             None,
         ];
-        for i in 0..9 {
-            assert_eq!(row(&out, i), expected[i], "and row {i}");
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(row(&out, i), *want, "and row {i}");
         }
     }
 
@@ -180,8 +180,8 @@ mod tests {
             None,
             None,
         ];
-        for i in 0..9 {
-            assert_eq!(row(&out, i), expected[i], "or row {i}");
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(row(&out, i), *want, "or row {i}");
         }
     }
 

@@ -204,7 +204,11 @@ mod tests {
 
     fn round_trip(v: Value, ty: &DataType) {
         let text = v.to_text().expect("non-null value has text");
-        assert_eq!(Value::from_text(&text, ty), Some(v), "round trip of {text:?}");
+        assert_eq!(
+            Value::from_text(&text, ty),
+            Some(v),
+            "round trip of {text:?}"
+        );
     }
 
     #[test]
@@ -244,24 +248,39 @@ mod tests {
 
     #[test]
     fn whitespace_and_plus_are_permissive_extensions() {
-        assert_eq!(Value::from_text(" 12 ", &DataType::Int64), Some(Value::Int64(12)));
-        assert_eq!(Value::from_text("+12", &DataType::Int64), Some(Value::Int64(12)));
+        assert_eq!(
+            Value::from_text(" 12 ", &DataType::Int64),
+            Some(Value::Int64(12))
+        );
+        assert_eq!(
+            Value::from_text("+12", &DataType::Int64),
+            Some(Value::Int64(12))
+        );
         assert_eq!(Value::from_text("12x", &DataType::Int64), None);
     }
 
     #[test]
     fn bool_synonyms_case_insensitive() {
         for s in ["true", "TRUE", "t", "T", "1"] {
-            assert_eq!(Value::from_text(s, &DataType::Bool), Some(Value::Bool(true)));
+            assert_eq!(
+                Value::from_text(s, &DataType::Bool),
+                Some(Value::Bool(true))
+            );
         }
         for s in ["false", "FALSE", "f", "F", "0"] {
-            assert_eq!(Value::from_text(s, &DataType::Bool), Some(Value::Bool(false)));
+            assert_eq!(
+                Value::from_text(s, &DataType::Bool),
+                Some(Value::Bool(false))
+            );
         }
     }
 
     #[test]
     fn integer_text_for_float_and_decimal() {
-        assert_eq!(Value::from_text("5", &DataType::Float64), Some(Value::Float64(5.0)));
+        assert_eq!(
+            Value::from_text("5", &DataType::Float64),
+            Some(Value::Float64(5.0))
+        );
         assert_eq!(
             Value::from_text("5", &dt(5, 2)),
             Some(Value::Decimal(Decimal::new(500, 2).unwrap()))

@@ -78,7 +78,12 @@ fn decimal_slice(c: &Column) -> &[i128] {
 /// NULL by zero, never an error.
 fn apply_int64(op: ArithOp, a: i64, b: i64) -> Result<Option<i64>, ExecError> {
     let overflow = || {
-        ExecError::Overflow(format!("{} {} {}", DataType::Int64, op_symbol(op), DataType::Int64))
+        ExecError::Overflow(format!(
+            "{} {} {}",
+            DataType::Int64,
+            op_symbol(op),
+            DataType::Int64
+        ))
     };
     let result = match op {
         ArithOp::Add => a.checked_add(b),
@@ -150,8 +155,12 @@ fn int64_arith(op: ArithOp, l: &Column, r: &Column) -> Result<Column, ExecError>
             }
         }
     }
-    Ok(Column::from_parts(DataType::Int64, OwnedValues::Int64(values), validity.finish())
-        .expect("int64 arith always builds a valid column"))
+    Ok(Column::from_parts(
+        DataType::Int64,
+        OwnedValues::Int64(values),
+        validity.finish(),
+    )
+    .expect("int64 arith always builds a valid column"))
 }
 
 fn uint64_arith(op: ArithOp, l: &Column, r: &Column) -> Result<Column, ExecError> {
@@ -175,8 +184,12 @@ fn uint64_arith(op: ArithOp, l: &Column, r: &Column) -> Result<Column, ExecError
             }
         }
     }
-    Ok(Column::from_parts(DataType::UInt64, OwnedValues::UInt64(values), validity.finish())
-        .expect("uint64 arith always builds a valid column"))
+    Ok(Column::from_parts(
+        DataType::UInt64,
+        OwnedValues::UInt64(values),
+        validity.finish(),
+    )
+    .expect("uint64 arith always builds a valid column"))
 }
 
 /// FLOAT64 follows IEEE: no overflow, no error, `Div`/`Mod` by zero give inf/NaN, not NULL.
@@ -200,8 +213,12 @@ fn float64_arith(op: ArithOp, l: &Column, r: &Column) -> Column {
         values.push(v);
         validity.push(true);
     }
-    Column::from_parts(DataType::Float64, OwnedValues::Float64(values), validity.finish())
-        .expect("float64 arith always builds a valid column")
+    Column::from_parts(
+        DataType::Float64,
+        OwnedValues::Float64(values),
+        validity.finish(),
+    )
+    .expect("float64 arith always builds a valid column")
 }
 
 /// Rescales `unscaled` (at `from` digits) up to `to` digits (`to >= from`, the result scale is
@@ -244,8 +261,12 @@ fn decimal_arith(
             values.push((ls[i] as f64 / fa) / (rs[i] as f64 / fb));
             validity.push(true);
         }
-        return Ok(Column::from_parts(DataType::Float64, OwnedValues::Float64(values), validity.finish())
-            .expect("decimal div always builds a valid FLOAT64 column"));
+        return Ok(Column::from_parts(
+            DataType::Float64,
+            OwnedValues::Float64(values),
+            validity.finish(),
+        )
+        .expect("decimal div always builds a valid FLOAT64 column"));
     }
     let DataType::Decimal(out_dt) = out else {
         unreachable!("DECIMAL Add/Sub/Mul/Mod always types to DECIMAL")
@@ -291,11 +312,18 @@ fn decimal_arith(
         values.push(result);
         validity.push(true);
     }
-    Ok(Column::from_parts(out.clone(), OwnedValues::Decimal(values), validity.finish())
-        .expect("decimal arith always builds a valid column"))
+    Ok(
+        Column::from_parts(out.clone(), OwnedValues::Decimal(values), validity.finish())
+            .expect("decimal arith always builds a valid column"),
+    )
 }
 
-pub(crate) fn arith(op: ArithOp, l: &Column, r: &Column, out: &DataType) -> Result<Column, ExecError> {
+pub(crate) fn arith(
+    op: ArithOp,
+    l: &Column,
+    r: &Column,
+    out: &DataType,
+) -> Result<Column, ExecError> {
     match (l.data_type(), r.data_type()) {
         (DataType::Int64, DataType::Int64) => int64_arith(op, l, r),
         (DataType::UInt64, DataType::UInt64) => uint64_arith(op, l, r),
@@ -320,32 +348,40 @@ fn neg_int64(c: &Column) -> Result<Column, ExecError> {
     let s = int64_slice(c);
     let mut values = Vec::with_capacity(s.len());
     let mut validity = ValidityBuilder::new();
-    for i in 0..s.len() {
+    for (i, &x) in s.iter().enumerate() {
         if c.is_null(i) {
             values.push(0);
             validity.push(false);
             continue;
         }
-        let v = s[i]
+        let v = x
             .checked_neg()
             .ok_or_else(|| ExecError::Overflow(format!("- {}", DataType::Int64)))?;
         values.push(v);
         validity.push(true);
     }
-    Ok(Column::from_parts(DataType::Int64, OwnedValues::Int64(values), validity.finish())
-        .expect("neg always builds a valid column"))
+    Ok(Column::from_parts(
+        DataType::Int64,
+        OwnedValues::Int64(values),
+        validity.finish(),
+    )
+    .expect("neg always builds a valid column"))
 }
 
 fn neg_float64(c: &Column) -> Column {
     let s = float64_slice(c);
     let mut values = Vec::with_capacity(s.len());
     let mut validity = ValidityBuilder::new();
-    for i in 0..s.len() {
-        values.push(if c.is_null(i) { 0.0 } else { -s[i] });
+    for (i, &x) in s.iter().enumerate() {
+        values.push(if c.is_null(i) { 0.0 } else { -x });
         validity.push(!c.is_null(i));
     }
-    Column::from_parts(DataType::Float64, OwnedValues::Float64(values), validity.finish())
-        .expect("neg always builds a valid column")
+    Column::from_parts(
+        DataType::Float64,
+        OwnedValues::Float64(values),
+        validity.finish(),
+    )
+    .expect("neg always builds a valid column")
 }
 
 fn neg_decimal(c: &Column) -> Column {
@@ -353,8 +389,8 @@ fn neg_decimal(c: &Column) -> Column {
     let s = decimal_slice(c);
     let mut values = Vec::with_capacity(s.len());
     let mut validity = ValidityBuilder::new();
-    for i in 0..s.len() {
-        values.push(if c.is_null(i) { 0 } else { -s[i] });
+    for (i, &x) in s.iter().enumerate() {
+        values.push(if c.is_null(i) { 0 } else { -x });
         validity.push(!c.is_null(i));
     }
     Column::from_parts(ty, OwnedValues::Decimal(values), validity.finish())
@@ -367,7 +403,10 @@ mod tests {
     use crate::types::{Decimal, Value};
 
     fn int_col(vals: &[Option<i64>]) -> Column {
-        let values: Vec<Value> = vals.iter().map(|v| v.map_or(Value::Null, Value::Int64)).collect();
+        let values: Vec<Value> = vals
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Int64))
+            .collect();
         Column::from_values(&DataType::Int64, &values).unwrap()
     }
 
@@ -427,7 +466,9 @@ mod tests {
         let r = dec_col(&DataType::decimal(5, 2).unwrap(), &[25]); // 0.25
         let out_ty = DataType::decimal(6, 2).unwrap();
         let out = arith(ArithOp::Add, &l, &r, &out_ty).unwrap();
-        let Value::Decimal(d) = out.get(0) else { unreachable!() };
+        let Value::Decimal(d) = out.get(0) else {
+            unreachable!()
+        };
         assert_eq!((d.unscaled(), d.scale()), (175, 2)); // 1.75
     }
 
@@ -437,7 +478,9 @@ mod tests {
         let r = dec_col(&DataType::decimal(5, 2).unwrap(), &[25]); // 0.25
         let out_ty = DataType::decimal(8, 3).unwrap();
         let out = arith(ArithOp::Mul, &l, &r, &out_ty).unwrap();
-        let Value::Decimal(d) = out.get(0) else { unreachable!() };
+        let Value::Decimal(d) = out.get(0) else {
+            unreachable!()
+        };
         assert_eq!((d.unscaled(), d.scale()), (375, 3)); // 0.375
     }
 
@@ -446,7 +489,9 @@ mod tests {
         let l = Column::from_values(&DataType::Float64, &[Value::Float64(1.0)]).unwrap();
         let r = Column::from_values(&DataType::Float64, &[Value::Float64(0.0)]).unwrap();
         let out = arith(ArithOp::Div, &l, &r, &DataType::Float64).unwrap();
-        let Value::Float64(f) = out.get(0) else { unreachable!() };
+        let Value::Float64(f) = out.get(0) else {
+            unreachable!()
+        };
         assert!(f.is_infinite() && f > 0.0);
     }
 

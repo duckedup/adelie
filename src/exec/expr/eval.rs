@@ -1,10 +1,12 @@
 //! Evaluates `Expr` against a `Batch`, producing the output column. Filled by U2 (adelie-1st).
 
-use crate::exec::kernels::{and, bool_column, compare, compare_scalar, not, null_column, or, truthy};
+use crate::exec::kernels::{
+    and, bool_column, compare, compare_scalar, not, null_column, or, truthy,
+};
 use crate::exec::{Batch, Bitmap, Column, ColumnBuilder, ExecError};
 use crate::types::{DataType, Value};
 
-use super::{ArithOp, CmpOp, Expr};
+use super::{CmpOp, Expr};
 use super::{arith, cast, like};
 
 /// Recurses after typing the whole expression, so an ill-typed plan fails as `Plan` before any
@@ -20,18 +22,33 @@ pub fn eval(expr: &Expr, batch: &Batch) -> Result<Column, ExecError> {
         Expr::Not(e) => Ok(not(&eval(e, batch)?)),
         Expr::IsNull(e) => Ok(is_null_column(&eval(e, batch)?, false)),
         Expr::IsNotNull(e) => Ok(is_null_column(&eval(e, batch)?, true)),
-        Expr::InList { expr, list, negated } => eval_in_list(expr, list, *negated, batch),
-        Expr::Between { expr, low, high, negated } => eval_between(expr, low, high, *negated, batch),
-        Expr::Like { expr, pattern, case_insensitive, negated } => {
-            eval_like(expr, pattern, *case_insensitive, *negated, batch)
-        }
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => eval_in_list(expr, list, *negated, batch),
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated,
+        } => eval_between(expr, low, high, *negated, batch),
+        Expr::Like {
+            expr,
+            pattern,
+            case_insensitive,
+            negated,
+        } => eval_like(expr, pattern, *case_insensitive, *negated, batch),
         Expr::Arith(op, l, r) => {
             let lc = eval(l, batch)?;
             let rc = eval(r, batch)?;
             arith::arith(*op, &lc, &rc, &ty)
         }
         Expr::Neg(e) => arith::neg(&eval(e, batch)?),
-        Expr::Case { branches, otherwise } => eval_case(branches, otherwise, &ty, batch),
+        Expr::Case {
+            branches,
+            otherwise,
+        } => eval_case(branches, otherwise, &ty, batch),
         Expr::Cast(e, _) => {
             let c = eval(e, batch)?;
             cast::cast(&c, &ty)
@@ -68,7 +85,11 @@ fn eval_cmp(op: CmpOp, l: &Expr, r: &Expr, batch: &Batch) -> Result<Column, Exec
     }
 }
 
-fn eval_fold(parts: &[Expr], batch: &Batch, f: fn(&Column, &Column) -> Column) -> Result<Column, ExecError> {
+fn eval_fold(
+    parts: &[Expr],
+    batch: &Batch,
+    f: fn(&Column, &Column) -> Column,
+) -> Result<Column, ExecError> {
     let mut iter = parts.iter();
     let first = iter.next().expect("data_type checked AND/OR is non-empty");
     let mut acc = eval(first, batch)?;
@@ -89,7 +110,12 @@ fn is_null_column(c: &Column, want_not_null: bool) -> Column {
 
 /// The OR of `Eq` against each value (SQL three-valued rules fall out of `compare_scalar`'s
 /// and `or`'s own NULL handling): `x IN (1, NULL)` is TRUE, else NULL, never FALSE.
-fn eval_in_list(expr: &Expr, list: &[Value], negated: bool, batch: &Batch) -> Result<Column, ExecError> {
+fn eval_in_list(
+    expr: &Expr,
+    list: &[Value],
+    negated: bool,
+    batch: &Batch,
+) -> Result<Column, ExecError> {
     let col = eval(expr, batch)?;
     let mut acc: Option<Column> = None;
     for v in list {
@@ -162,10 +188,13 @@ fn eval_case(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::Field;
+    use crate::exec::{ArithOp, Field};
 
     fn field(name: &str, ty: DataType) -> Field {
-        Field { name: name.to_string(), ty }
+        Field {
+            name: name.to_string(),
+            ty,
+        }
     }
 
     fn batch(fields: Vec<Field>, cols: Vec<Column>) -> Batch {
@@ -173,7 +202,10 @@ mod tests {
     }
 
     fn int_col(vals: &[Option<i64>]) -> Column {
-        let values: Vec<Value> = vals.iter().map(|v| v.map_or(Value::Null, Value::Int64)).collect();
+        let values: Vec<Value> = vals
+            .iter()
+            .map(|v| v.map_or(Value::Null, Value::Int64))
+            .collect();
         Column::from_values(&DataType::Int64, &values).unwrap()
     }
 
@@ -216,14 +248,22 @@ mod tests {
     #[test]
     fn cmp_with_literal_on_either_side() {
         let b = five_row_batch();
-        let right = Expr::cmp(CmpOp::Lt, Expr::col(0), Expr::lit(Value::Int64(2), DataType::Int64));
+        let right = Expr::cmp(
+            CmpOp::Lt,
+            Expr::col(0),
+            Expr::lit(Value::Int64(2), DataType::Int64),
+        );
         let out = eval(&right, &b).unwrap();
         assert_type_matches(&right, &b, &out);
         assert_eq!(bool_at(&out, 0), Some(true));
         assert_eq!(bool_at(&out, 1), Some(false));
         assert_eq!(bool_at(&out, 2), None);
 
-        let left = Expr::cmp(CmpOp::Lt, Expr::lit(Value::Int64(2), DataType::Int64), Expr::col(0));
+        let left = Expr::cmp(
+            CmpOp::Lt,
+            Expr::lit(Value::Int64(2), DataType::Int64),
+            Expr::col(0),
+        );
         let out2 = eval(&left, &b).unwrap();
         // 2 < a  <=>  a > 2
         assert_eq!(bool_at(&out2, 3), Some(true));
@@ -233,8 +273,16 @@ mod tests {
     #[test]
     fn and_or_not() {
         let b = five_row_batch();
-        let gt1 = Expr::cmp(CmpOp::Gt, Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64));
-        let lt5 = Expr::cmp(CmpOp::Lt, Expr::col(0), Expr::lit(Value::Int64(5), DataType::Int64));
+        let gt1 = Expr::cmp(
+            CmpOp::Gt,
+            Expr::col(0),
+            Expr::lit(Value::Int64(1), DataType::Int64),
+        );
+        let lt5 = Expr::cmp(
+            CmpOp::Lt,
+            Expr::col(0),
+            Expr::lit(Value::Int64(5), DataType::Int64),
+        );
         let and_e = Expr::And(vec![gt1.clone(), lt5.clone()]);
         let out = eval(&and_e, &b).unwrap();
         assert_type_matches(&and_e, &b, &out);
@@ -316,11 +364,13 @@ mod tests {
     fn like_and_negated() {
         let b = batch(
             vec![field("s", DataType::String)],
-            vec![Column::from_values(
-                &DataType::String,
-                &[Value::String("abc".into()), Value::String("xyz".into())],
-            )
-            .unwrap()],
+            vec![
+                Column::from_values(
+                    &DataType::String,
+                    &[Value::String("abc".into()), Value::String("xyz".into())],
+                )
+                .unwrap(),
+            ],
         );
         let l = Expr::Like {
             expr: Box::new(Expr::col(0)),
@@ -337,7 +387,11 @@ mod tests {
     #[test]
     fn arith_and_neg() {
         let b = five_row_batch();
-        let add = Expr::Arith(ArithOp::Add, Box::new(Expr::col(0)), Box::new(Expr::lit(Value::Int64(10), DataType::Int64)));
+        let add = Expr::Arith(
+            ArithOp::Add,
+            Box::new(Expr::col(0)),
+            Box::new(Expr::lit(Value::Int64(10), DataType::Int64)),
+        );
         let out = eval(&add, &b).unwrap();
         assert_type_matches(&add, &b, &out);
         assert_eq!(out.get(0), Value::Int64(11));
@@ -354,11 +408,19 @@ mod tests {
         let case_e = Expr::Case {
             branches: vec![
                 (
-                    Expr::cmp(CmpOp::Eq, Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64)),
+                    Expr::cmp(
+                        CmpOp::Eq,
+                        Expr::col(0),
+                        Expr::lit(Value::Int64(1), DataType::Int64),
+                    ),
                     Expr::lit(Value::Int64(100), DataType::Int64),
                 ),
                 (
-                    Expr::cmp(CmpOp::Eq, Expr::col(0), Expr::lit(Value::Int64(4), DataType::Int64)),
+                    Expr::cmp(
+                        CmpOp::Eq,
+                        Expr::col(0),
+                        Expr::lit(Value::Int64(4), DataType::Int64),
+                    ),
                     Expr::lit(Value::Int64(400), DataType::Int64),
                 ),
             ],
@@ -373,7 +435,11 @@ mod tests {
 
         let no_otherwise = Expr::Case {
             branches: vec![(
-                Expr::cmp(CmpOp::Eq, Expr::col(0), Expr::lit(Value::Int64(1), DataType::Int64)),
+                Expr::cmp(
+                    CmpOp::Eq,
+                    Expr::col(0),
+                    Expr::lit(Value::Int64(1), DataType::Int64),
+                ),
                 Expr::lit(Value::Int64(100), DataType::Int64),
             )],
             otherwise: None,

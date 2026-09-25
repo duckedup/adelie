@@ -23,7 +23,10 @@ pub(crate) fn may_match<'s>(pred: &Expr, stats: &dyn Fn(usize) -> Option<ColumnR
 
 /// True iff `probe(col, v)` answers `might column col contain v`; `None` means no index.
 pub(crate) fn index_may_match(pred: &Expr, probe: &dyn Fn(usize, &Value) -> Option<bool>) -> bool {
-    !pred.conjuncts().iter().any(|c| index_conjunct_is_false(c, probe))
+    !pred
+        .conjuncts()
+        .iter()
+        .any(|c| index_conjunct_is_false(c, probe))
 }
 
 fn conjunct_is_false<'s>(e: &Expr, stats: &dyn Fn(usize) -> Option<ColumnRange<'s>>) -> bool {
@@ -40,7 +43,9 @@ fn conjunct_is_false<'s>(e: &Expr, stats: &dyn Fn(usize) -> Option<ColumnRange<'
             list,
             negated: false,
         } => in_list_is_false(expr, list, stats),
-        Expr::IsNull(e) => column_of(e).is_some_and(|c| stats(c).is_some_and(|r| r.null_count == 0)),
+        Expr::IsNull(e) => {
+            column_of(e).is_some_and(|c| stats(c).is_some_and(|r| r.null_count == 0))
+        }
         Expr::IsNotNull(e) => {
             column_of(e).is_some_and(|c| stats(c).is_some_and(|r| r.null_count == r.rows))
         }
@@ -109,12 +114,18 @@ fn cmp_is_false<'s>(
     }
     match op {
         CmpOp::Eq => {
-            matches!(range.min.and_then(|m| total_cmp(v, m)), Some(Ordering::Less))
-                || matches!(range.max.and_then(|m| total_cmp(v, m)), Some(Ordering::Greater))
+            matches!(
+                range.min.and_then(|m| total_cmp(v, m)),
+                Some(Ordering::Less)
+            ) || matches!(
+                range.max.and_then(|m| total_cmp(v, m)),
+                Some(Ordering::Greater)
+            )
         }
         CmpOp::Ne => match (range.min, range.max) {
             (Some(min), Some(max)) => {
-                total_cmp(min, v) == Some(Ordering::Equal) && total_cmp(max, v) == Some(Ordering::Equal)
+                total_cmp(min, v) == Some(Ordering::Equal)
+                    && total_cmp(max, v) == Some(Ordering::Equal)
             }
             _ => false,
         },
@@ -122,12 +133,18 @@ fn cmp_is_false<'s>(
             range.min.and_then(|m| total_cmp(m, v)),
             Some(Ordering::Greater) | Some(Ordering::Equal)
         ),
-        CmpOp::Le => matches!(range.min.and_then(|m| total_cmp(m, v)), Some(Ordering::Greater)),
+        CmpOp::Le => matches!(
+            range.min.and_then(|m| total_cmp(m, v)),
+            Some(Ordering::Greater)
+        ),
         CmpOp::Gt => matches!(
             range.max.and_then(|m| total_cmp(m, v)),
             Some(Ordering::Less) | Some(Ordering::Equal)
         ),
-        CmpOp::Ge => matches!(range.max.and_then(|m| total_cmp(m, v)), Some(Ordering::Less)),
+        CmpOp::Ge => matches!(
+            range.max.and_then(|m| total_cmp(m, v)),
+            Some(Ordering::Less)
+        ),
     }
 }
 
@@ -175,7 +192,8 @@ fn in_list_is_false<'s>(
     for v in list.iter().filter(|v| !v.is_null()) {
         let outside = match (range.min, range.max) {
             (Some(min), Some(max)) => {
-                total_cmp(v, min) == Some(Ordering::Less) || total_cmp(v, max) == Some(Ordering::Greater)
+                total_cmp(v, min) == Some(Ordering::Less)
+                    || total_cmp(v, max) == Some(Ordering::Greater)
             }
             _ => return false,
         };
@@ -198,7 +216,7 @@ mod tests {
         max: Option<&'a Value>,
     ) -> impl Fn(usize) -> Option<ColumnRange<'a>> {
         move |c| {
-            (c == 0).then(|| ColumnRange {
+            (c == 0).then_some(ColumnRange {
                 rows,
                 null_count,
                 min,
@@ -232,7 +250,11 @@ mod tests {
     #[test]
     fn comparison_with_null_literal_is_always_false() {
         let stats = stats_of(3, 0, None, None);
-        let pred = Expr::cmp(CmpOp::Eq, Expr::col(0), Expr::Literal(Value::Null, DataType::Int64));
+        let pred = Expr::cmp(
+            CmpOp::Eq,
+            Expr::col(0),
+            Expr::Literal(Value::Null, DataType::Int64),
+        );
         assert!(!may_match(&pred, &stats));
     }
 
@@ -349,7 +371,11 @@ mod tests {
     fn nan_literal_never_prunes_eq_or_ne() {
         let (min, max) = (Value::Int64(0), Value::Int64(100));
         let stats = stats_of(3, 0, Some(&min), Some(&max));
-        let pred = Expr::cmp(CmpOp::Eq, Expr::col(0), Expr::lit(Value::Float64(f64::NAN), DataType::Float64));
+        let pred = Expr::cmp(
+            CmpOp::Eq,
+            Expr::col(0),
+            Expr::lit(Value::Float64(f64::NAN), DataType::Float64),
+        );
         assert!(may_match(&pred, &stats));
     }
 

@@ -288,7 +288,7 @@ mod tests {
 
     /// ~20% NULL, else a small duplicate-heavy domain per kind (FLOAT64's includes NaN, -0.0, 0.0).
     fn random_value(rng: &mut SplitMix64, kind: ColKind) -> Value {
-        if rng.next_u64() % 5 == 0 {
+        if rng.next_u64().is_multiple_of(5) {
             return Value::Null;
         }
         match kind {
@@ -304,13 +304,15 @@ mod tests {
                 let unscaled = (rng.next_u64() % 5) as i128 - 2;
                 Value::Decimal(Decimal::new(unscaled, 2).unwrap())
             }
-            ColKind::Bool => Value::Bool(rng.next_u64() % 2 == 0),
+            ColKind::Bool => Value::Bool(rng.next_u64().is_multiple_of(2)),
         }
     }
 
     /// A random non-empty, randomly ordered subset of `0..num_cols`, so keys' priority varies.
     fn random_order(rng: &mut SplitMix64, num_cols: usize) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..num_cols).filter(|_| rng.next_u64() % 2 == 0).collect();
+        let mut order: Vec<usize> = (0..num_cols)
+            .filter(|_| rng.next_u64().is_multiple_of(2))
+            .collect();
         if order.is_empty() {
             order.push((rng.next_u64() % num_cols as u64) as usize);
         }
@@ -351,7 +353,7 @@ mod tests {
 
     #[test]
     fn exec_kernel_matches_the_old_flush_order() {
-        let mut rng = SplitMix64::new(0xADE11E_1);
+        let mut rng = SplitMix64::new(0x00AD_E11E_0001);
         for case in 0..200u64 {
             let num_cols = 1 + (rng.next_u64() % 3) as usize;
             let kinds: Vec<ColKind> = (0..num_cols)
@@ -376,7 +378,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // slow under Miri
     fn exec_kernel_matches_chunking_across_batch_rows() {
-        let mut rng = SplitMix64::new(0xADE11E_2);
+        let mut rng = SplitMix64::new(0x00AD_E11E_0002);
         let fields = [field("a", DataType::Int64), field("seq", DataType::Int64)];
         let n = 5000usize;
         let a_vals: Vec<Value> = (0..n)
@@ -393,7 +395,7 @@ mod tests {
         .unwrap();
         let order = [0usize];
 
-        let actual = sort_rows(&fields, &[batch.clone()], &order).unwrap();
+        let actual = sort_rows(&fields, std::slice::from_ref(&batch), &order).unwrap();
         let expected = reference_sort_rows(&fields, &[batch], &order).unwrap();
         assert_batches_match(&actual, &expected, &fields, 0);
     }

@@ -13,9 +13,8 @@ pub(crate) mod select;
 pub(crate) use boolean::{and, bool_column, not, or, truthy};
 pub(crate) use compare::{compare, compare_scalar};
 pub(crate) use hash::stable_hash;
-pub(crate) use order::{compare_rows, sort_indices};
+pub(crate) use order::sort_indices;
 pub(crate) use rowkey::encode_row_key;
 pub(crate) use select::{
-    concat_batches, filter, filter_batch, null_column, rechunk, slice_batch, take, take_batch,
-    take_opt,
+    concat_batches, filter_batch, null_column, rechunk, slice_batch, take, take_batch, take_opt,
 };
