@@ -685,7 +685,10 @@ mod tests {
             matches!(err, ExecError::Invalid(ref m) if m.contains("instructions")),
             "{err:?}"
         );
-        assert!(Regex::compile("(a{1000}){40}").is_ok());
+        // Just under the cap is allowed; sized, not compiled, since compiling it is slow under Miri.
+        let near = Parser::parse("(a{1000}){40}").unwrap();
+        assert!(program_size(&near) <= MAX_PROGRAM);
+        assert!(Regex::compile("(a{10}){10}").is_ok());
     }
 
     fn m(pattern: &str, input: &str) -> bool {
