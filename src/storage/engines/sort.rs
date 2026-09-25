@@ -354,7 +354,9 @@ mod tests {
     #[test]
     fn exec_kernel_matches_the_old_flush_order() {
         let mut rng = SplitMix64::new(0x00AD_E11E_0001);
-        for case in 0..200u64 {
+        // 200 random cases take ~8 min under Miri; a handful still covers the path for UB.
+        let cases = if cfg!(miri) { 5 } else { 200 };
+        for case in 0..cases {
             let num_cols = 1 + (rng.next_u64() % 3) as usize;
             let kinds: Vec<ColKind> = (0..num_cols)
                 .map(|_| KINDS[(rng.next_u64() % KINDS.len() as u64) as usize])
