@@ -20,3 +20,4 @@ rule, why it exists, and the evidence.
 | [D0013](0013-migrations-as-built.md) | A migration builds a new table id and swaps it in by name; segment entries are views of shared files; the library API comes first |
 | [D0014](0014-backup-versions-and-the-migration-ledger.md) | A retained manifest version is readable, so GC keeps what it names; a backup is hard links plus one manifest; the migration ledger lives in the manifest |
 | [D0015](0015-query-execution-as-built.md) | Query execution is a pure library engine in `src/exec` driven by a physical `Plan`, with storage behind `TableSource`; aggregate partial states and encodings are frozen |
+| [D0016](0016-sql-front-end-as-built.md) | SQL is a hand-rolled lexer/parser, a binder addressing columns by name until the final lowering, a rule-based planner with no cost model, and a statement executor over `Store` |

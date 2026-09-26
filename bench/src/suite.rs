@@ -139,7 +139,8 @@ fn median(samples: &mut [Duration]) -> Option<Duration> {
 
 /// Compares each engine's last outcome for a query, rendering rows as the harness would
 /// under all-`T` (text) column types after sorting, so row order never causes a mismatch.
-fn cross_check(outcomes: &[(String, Result<Outcome, EngineError>)]) -> Option<String> {
+/// Public so `bin/bench.rs`'s smoke command can cross-check DuckDB against a fresh adelie.
+pub fn cross_check(outcomes: &[(String, Result<Outcome, EngineError>)]) -> Option<String> {
     if outcomes.len() < 2 {
         return None;
     }
@@ -168,8 +169,32 @@ fn cross_check(outcomes: &[(String, Result<Outcome, EngineError>)]) -> Option<St
         })
 }
 
+/// Renders a row for the cross-check only: each float is rounded to 10 significant digits
+/// first, since ClickBench Q2/Q3/Q9's `avg` can differ in the last ulp by summation order.
+/// Integer and text comparisons are never loosened.
 fn render_row(row: &[Value]) -> String {
-    row.iter().map(render_text).collect::<Vec<_>>().join(" ")
+    row.iter()
+        .map(|v| render_text(&round_for_cross_check(v)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn round_for_cross_check(v: &Value) -> Value {
+    match v {
+        Value::Float(f) => Value::Float(round_significant(*f, 10)),
+        other => other.clone(),
+    }
+}
+
+/// Rounds `f` to `digits` significant decimal digits; `0.0` and non-finite values pass
+/// through unchanged (no finite `log10` to round around).
+fn round_significant(f: f64, digits: i32) -> f64 {
+    if f == 0.0 || !f.is_finite() {
+        return f;
+    }
+    let magnitude = f.abs().log10().floor() as i32;
+    let factor = 10f64.powi(digits - magnitude - 1);
+    (f * factor).round() / factor
 }
 
 /// A table with query, description, one median-ms column per engine, and `loss` (slowest
@@ -252,6 +277,26 @@ mod tests {
     fn cross_check_flags_a_differing_row() {
         let a = Ok(Outcome::Rows(vec![vec![Value::Int(1)]]));
         let b = Ok(Outcome::Rows(vec![vec![Value::Int(2)]]));
+        let outcomes = vec![("a".to_string(), a), ("b".to_string(), b)];
+        assert!(cross_check(&outcomes).is_some());
+    }
+
+    #[test]
+    fn cross_check_rounds_floats_to_ten_significant_digits() {
+        // Differ only in the 16th significant digit (a last-ulp summation-order wobble):
+        // rounded to 10 significant digits, both sides render identically.
+        let a = Ok(Outcome::Rows(vec![vec![Value::Float(
+            1.234_567_890_123_456,
+        )]]));
+        let b = Ok(Outcome::Rows(vec![vec![Value::Float(
+            1.234_567_890_123_457,
+        )]]));
+        let outcomes = vec![("a".to_string(), a), ("b".to_string(), b)];
+        assert!(cross_check(&outcomes).is_none());
+
+        // Differ in the 5th significant digit: still a real mismatch after rounding.
+        let a = Ok(Outcome::Rows(vec![vec![Value::Float(1.2345)]]));
+        let b = Ok(Outcome::Rows(vec![vec![Value::Float(1.2346)]]));
         let outcomes = vec![("a".to_string(), a), ("b".to_string(), b)];
         assert!(cross_check(&outcomes).is_some());
     }

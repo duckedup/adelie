@@ -12,5 +12,6 @@ description = "DuckDB differential testing and benchmarks for adelie. Its own wo
 [workspace]
 
 [dependencies]
+adelie = { path = "..", default-features = false }
 adelie-harness = { path = "../harness" }
 duckdb = { version = "1", features = ["bundled"] }

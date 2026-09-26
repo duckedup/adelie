@@ -1,6 +1,6 @@
-//! `coalesce_companion`: the read side of contract rule 6. Reading `<name>` when a
-//! `<name>::string` companion exists yields STRING, the primary's canonical text where it
-//! is set and the companion's value otherwise; the primary wins when both are set.
+//! `coalesce_companion`: the kernel behind `Expr::Func`'s `CoalesceText`, contract rule 6's
+//! read side. It is not the default read of `<name>`, which keeps its own type rather than
+//! widening to STRING (SPEC §3, Q2); only an explicit `coalesce_text()` call reaches here.
 
 use crate::types::{DataType, Value};
 

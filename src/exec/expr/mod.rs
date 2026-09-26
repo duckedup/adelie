@@ -1,11 +1,18 @@
-//! adelie's expression IR (SPEC §7 syntax) and its typing. `eval.rs` (U2) evaluates it.
+//! adelie's expression IR (SPEC §7 syntax), including named scalar functions (`Func`,
+//! adelie-1st.1), and its typing. `eval.rs` (U2) evaluates it.
 
 mod arith;
 mod cast;
 mod eval;
+mod func;
 mod like;
+mod regexp;
+mod string;
+mod time;
 
 pub use eval::eval;
+pub use func::{DatePart, ScalarFunc, TruncUnit};
+pub use regexp::Regex;
 
 use crate::types::{DataType, DecimalType, Value, fits};
 
@@ -46,7 +53,7 @@ pub enum ArithOp {
 }
 
 /// SPEC §8's expression syntax: comparison, boolean, arithmetic, CASE, CAST, IN, BETWEEN,
-/// LIKE/ILIKE, IS NULL. Named scalar functions wait for the binder (adelie-1st.1).
+/// LIKE/ILIKE, IS NULL, and named scalar functions (`Func`, adelie-1st.1).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Index into the input batch's fields.
@@ -85,6 +92,12 @@ pub enum Expr {
         otherwise: Option<Box<Expr>>,
     },
     Cast(Box<Expr>, DataType),
+    /// A named scalar function call (adelie-1st.1): `func::func_type` types it below,
+    /// `func::eval_func` (via `eval.rs`) runs it.
+    Func {
+        func: ScalarFunc,
+        args: Vec<Expr>,
+    },
 }
 
 impl Expr {
@@ -242,6 +255,13 @@ impl Expr {
                     Err(ExecError::Plan(format!("cannot cast {from} to {to}")))
                 }
             }
+            Expr::Func { func: f, args } => {
+                let arg_types: Vec<DataType> = args
+                    .iter()
+                    .map(|a| a.data_type(input))
+                    .collect::<Result<_, _>>()?;
+                func::func_type(f, &arg_types)
+            }
         }
     }
 
@@ -300,6 +320,11 @@ impl Expr {
                 }
             }
             Expr::Cast(e, _) => e.columns(out),
+            Expr::Func { args, .. } => {
+                for a in args {
+                    a.columns(out);
+                }
+            }
         }
     }
 }
@@ -673,5 +698,32 @@ mod tests {
         let mut out = Vec::new();
         e.columns(&mut out);
         assert_eq!(out, vec![2, 0]);
+    }
+
+    #[test]
+    fn func_types_its_args_and_dispatches_to_func_type() {
+        let input = fields(&[DataType::String, DataType::Int64]);
+        let ok = Expr::Func {
+            func: ScalarFunc::Lower,
+            args: vec![Expr::col(0)],
+        };
+        assert_eq!(ok.data_type(&input).unwrap(), DataType::String);
+
+        let bad = Expr::Func {
+            func: ScalarFunc::Lower,
+            args: vec![Expr::col(1)],
+        };
+        assert!(matches!(bad.data_type(&input), Err(ExecError::Plan(_))));
+    }
+
+    #[test]
+    fn func_columns_visits_every_arg() {
+        let e = Expr::Func {
+            func: ScalarFunc::Concat,
+            args: vec![Expr::col(1), Expr::col(0)],
+        };
+        let mut out = Vec::new();
+        e.columns(&mut out);
+        assert_eq!(out, vec![1, 0]);
     }
 }

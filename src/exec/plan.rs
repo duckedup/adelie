@@ -75,6 +75,8 @@ pub struct AggCall {
 pub enum AggFunc {
     CountStar,
     Count,
+    /// Exact `count(DISTINCT x)`. NULLs ignored, result INT64.
+    CountDistinct,
     Sum,
     Avg,
     Min,

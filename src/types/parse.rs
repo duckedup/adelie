@@ -1,6 +1,6 @@
-//! Inverse of `Value::to_text` (`text.rs`): canonical text, plus a few permissive
-//! extensions (whitespace, `+`, bool synonyms, integer text, DATE-as-TIMESTAMP), back to a
-//! `Value` of a given `DataType`. Never used for LIST.
+//! Inverse of `Value::to_text` (`text.rs`): canonical text, plus a few permissive extensions
+//! (whitespace, `+`, bool synonyms, integer text, DATE-as-TIMESTAMP, a space for TIMESTAMP's
+//! `T`), back to a `Value` of a given `DataType`. Never used for LIST.
 
 use std::net::IpAddr;
 
@@ -131,7 +131,7 @@ fn parse_uuid(text: &str) -> Option<Value> {
 
 /// `days_from_civil` (Howard Hinnant), the inverse of `text::civil_from_days`. Splits off the
 /// trailing `-MM-DD` so a negative (variable-width) year still parses.
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -177,9 +177,15 @@ fn parse_timestamp(text: &str) -> Option<i64> {
     if let Some(days) = parse_date(text) {
         return (days as i64).checked_mul(NS_PER_DAY);
     }
-    let (date_part, time_part) = text.split_once('T')?;
+    // Canonical `T…Z`, plus the SQL/DuckDB spelling: a space separator with no `Z`.
+    let (date_part, time_part) = match text.split_once('T') {
+        Some((d, t)) => (d, t.strip_suffix('Z')?),
+        None => {
+            let (d, t) = text.split_once(' ')?;
+            (d, t.strip_suffix('Z').unwrap_or(t))
+        }
+    };
     let days = parse_date(date_part)?;
-    let time_part = time_part.strip_suffix('Z')?;
     let (hms, frac) = match time_part.split_once('.') {
         Some((h, f)) => (h, Some(f)),
         None => (time_part, None),
@@ -349,5 +355,27 @@ mod tests {
         assert_eq!(Value::from_text("not a number", &DataType::Int64), None);
         assert_eq!(Value::from_text("2024-13-01", &DataType::Date), None);
         assert_eq!(Value::from_text("not-a-uuid", &DataType::Uuid), None);
+    }
+
+    #[test]
+    fn timestamp_accepts_the_space_separated_sql_spelling() {
+        let canonical = Value::from_text("2024-01-02T03:04:05.5Z", &DataType::Timestamp);
+        assert!(canonical.is_some());
+        assert_eq!(
+            Value::from_text("2024-01-02 03:04:05.5", &DataType::Timestamp),
+            canonical
+        );
+        assert_eq!(
+            Value::from_text("2024-01-02 03:04:05.5Z", &DataType::Timestamp),
+            canonical
+        );
+        assert_eq!(
+            Value::from_text("2024-01-02T03:04:05", &DataType::Timestamp),
+            None
+        );
+        assert_eq!(
+            Value::from_text("2024-01-02 3:04:05", &DataType::Timestamp),
+            None
+        );
     }
 }

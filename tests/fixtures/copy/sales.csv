@@ -1,0 +1,8 @@
+cat,amt,note
+a,100,"clean, simple"
+a,200,"first line
+second line"
+b,,no amount
+b,n/a,not a number
+a,50,plain
+b,25,another
