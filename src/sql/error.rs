@@ -19,6 +19,8 @@ pub enum SqlError {
     Ingest(IngestError),
     Io(String),
     Storage(storage::Error),
+    /// A write statement sent through the read-only path (`execute_read`).
+    ReadOnly(String),
 }
 
 impl fmt::Display for SqlError {
@@ -30,6 +32,9 @@ impl fmt::Display for SqlError {
             SqlError::Ingest(e) => write!(f, "{e}"),
             SqlError::Io(msg) => write!(f, "{msg}"),
             SqlError::Storage(e) => write!(f, "{e}"),
+            SqlError::ReadOnly(kind) => {
+                write!(f, "{kind} is a write; this connection is read-only")
+            }
         }
     }
 }

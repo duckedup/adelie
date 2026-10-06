@@ -3,6 +3,7 @@
 
 mod backup;
 mod buffer;
+mod catalog;
 mod compact;
 pub mod engines;
 mod error;
@@ -36,6 +37,7 @@ use crate::storage::manifest::{
 
 use buffer::{FlushTicket, should_flush};
 
+pub use catalog::{ColumnSummary, TableSummary, TimeRange};
 pub use engines::{Append, Engine, MergePlan, ScanPlan, engine_by_name};
 pub use error::Error;
 pub use ledger::{MigrateMode, PendingMigration};

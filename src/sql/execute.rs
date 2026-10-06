@@ -56,6 +56,53 @@ fn execute_here(store: &Store, sql: &str, opts: &Options) -> Result<SqlOutput, S
     Ok(last.expect("checked non-empty above"))
 }
 
+/// Runs `sql` against a lock-free `View`. Every statement must be a query: a write anywhere
+/// in the batch rejects the whole call with `SqlError::ReadOnly` before anything runs.
+pub fn execute_read(view: &View, sql: &str, opts: &Options) -> Result<SqlOutput, SqlError> {
+    super::parser::on_sql_stack(|| {
+        let statements = super::parser::parse_here(sql)?;
+        if statements.is_empty() {
+            return Err(SqlError::Bind("no statement".to_string()));
+        }
+        let mut queries = Vec::with_capacity(statements.len());
+        for stmt in &statements {
+            match stmt {
+                ast::Statement::Query(q) => queries.push(q),
+                other => return Err(SqlError::ReadOnly(statement_kind(other).to_string())),
+            }
+        }
+        let binder = Binder::new(view, opts.default_db.clone(), opts.now);
+        let mut last = None;
+        for q in queries {
+            last = Some(execute_query(view, &binder, q, opts)?);
+        }
+        Ok(last.expect("checked non-empty above"))
+    })
+}
+
+/// True iff every statement in `sql` is a query.
+pub fn is_read_only(sql: &str) -> Result<bool, SqlError> {
+    super::parser::on_sql_stack(|| {
+        let statements = super::parser::parse_here(sql)?;
+        Ok(statements.iter().all(|s| statement_kind(s) == "SELECT"))
+    })
+}
+
+/// The statement's leading keyword; exhaustive so a new kind forces a read/write decision.
+fn statement_kind(stmt: &ast::Statement) -> &'static str {
+    match stmt {
+        ast::Statement::Query(_) => "SELECT",
+        ast::Statement::CreateTable(_) => "CREATE TABLE",
+        ast::Statement::CreateSchema(_) => "CREATE SCHEMA",
+        ast::Statement::DropTable(_) => "DROP TABLE",
+        ast::Statement::UndropTable(_) => "UNDROP TABLE",
+        ast::Statement::Truncate(_) => "TRUNCATE",
+        ast::Statement::Insert(_) => "INSERT",
+        ast::Statement::Copy(_) => "COPY",
+        ast::Statement::Delete(_) => "DELETE",
+    }
+}
+
 fn resolve_name(name: &ast::ObjectName, default_db: &str) -> TableName {
     TableName::new(
         name.db.clone().unwrap_or_else(|| default_db.to_string()),
@@ -530,6 +577,93 @@ mod tests {
         let store = open(&dir);
         let out = execute(&store, "CREATE SCHEMA IF NOT EXISTS otel").unwrap();
         assert!(matches!(out, SqlOutput::Statement { rows_affected: 0 }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn count_rows(store: &Store, sql: &str) -> usize {
+        let SqlOutput::Rows(rows) = execute(store, sql).unwrap() else {
+            panic!("expected rows")
+        };
+        rows.batches.iter().map(exec::Batch::rows).sum()
+    }
+
+    #[test]
+    fn is_read_only_classifies_every_statement_kind() {
+        let reads = ["SELECT 1", "SELECT 1; SELECT 2"];
+        let writes = [
+            "CREATE TABLE t (a INT64)",
+            "CREATE SCHEMA s",
+            "DROP TABLE t",
+            "UNDROP TABLE t",
+            "TRUNCATE t",
+            "INSERT INTO t VALUES (1)",
+            "COPY t FROM '/tmp/x.csv'",
+            "DELETE FROM t WHERE a = 1",
+            "SELECT 1; INSERT INTO t VALUES (1)",
+        ];
+        for sql in reads {
+            assert!(is_read_only(sql).unwrap(), "{sql}");
+        }
+        for sql in writes {
+            assert!(!is_read_only(sql).unwrap(), "{sql}");
+        }
+        assert!(is_read_only("SELEC").is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn execute_read_matches_execute_and_rejects_writes() {
+        let dir = temp_dir("read");
+        let store = open(&dir);
+        execute(&store, "CREATE TABLE t (a INT64)").unwrap();
+        execute(&store, "INSERT INTO t VALUES (1), (2), (3)").unwrap();
+
+        let reader = crate::storage::Reader::open(&dir).unwrap();
+        let view = reader.snapshot().unwrap();
+        let opts = Options::default();
+        let SqlOutput::Rows(rows) =
+            execute_read(&view, "SELECT a FROM t WHERE a > 1", &opts).unwrap()
+        else {
+            panic!("expected rows")
+        };
+        let total: usize = rows.batches.iter().map(exec::Batch::rows).sum();
+        assert_eq!(total, 2);
+
+        for sql in [
+            "INSERT INTO t VALUES (9)",
+            "SELECT 1; INSERT INTO t VALUES (9)",
+        ] {
+            let err = execute_read(&view, sql, &opts).unwrap_err();
+            assert!(matches!(err, SqlError::ReadOnly(_)), "{sql}");
+        }
+        assert_eq!(
+            execute_read(&view, "DELETE FROM t", &opts)
+                .unwrap_err()
+                .to_string(),
+            "DELETE is a write; this connection is read-only"
+        );
+        assert_eq!(count_rows(&store, "SELECT a FROM t"), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // touches the real filesystem
+    fn bind_errors_suggest_close_names() {
+        let dir = temp_dir("suggest");
+        let store = open(&dir);
+        execute(&store, "CREATE TABLE t (name STRING)").unwrap();
+        let err = execute(&store, "SELECT naem FROM t")
+            .unwrap_err()
+            .to_string();
+        assert!(err.ends_with("did you mean \"name\"?"), "{err}");
+        let err = execute(&store, "SELECT name FROM tt")
+            .unwrap_err()
+            .to_string();
+        assert!(err.ends_with("did you mean \"t\"?"), "{err}");
+        let err = execute(&store, "SELECT zzzzzz FROM t")
+            .unwrap_err()
+            .to_string();
+        assert!(err.ends_with("does not exist"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

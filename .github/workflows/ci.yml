@@ -54,6 +54,17 @@ jobs:
             echo "::error::clean build took ${elapsed}s, over the 60s budget (D0004). A new dependency likely blew the build budget; that is a design change, not an implementation detail."
             exit 1
           fi
+      - name: Time a clean offline default build (CLI, MCP, HTTP)
+        run: |
+          cargo clean
+          start=$(date +%s)
+          cargo build --offline
+          elapsed=$(( $(date +%s) - start ))
+          echo "clean default build: ${elapsed}s (budget: 120s, D0004)"
+          if [ "$elapsed" -gt 120 ]; then
+            echo "::error::clean default build took ${elapsed}s, over the 120s budget (D0004). A new dependency likely blew the build budget; that is a design change, not an implementation detail."
+            exit 1
+          fi
 
   clippy:
     runs-on: ubuntu-latest

@@ -263,6 +263,13 @@ test('lanes: the slt corpus hits every RUST job plus bench, which differentials 
   eq(r.jobs, [...RUST_JOBS, 'bench', 'checker-laws'], 'jobs')
 })
 
+test('lanes: feature-gated surface code is built by fmt, clippy and test only, never lean or miri', () => {
+  for (const f of ['src/cli/mod.rs', 'src/mcp/tools.rs', 'src/server/mod.rs', 'src/surface/mod.rs', 'src/bin/adelie.rs', 'tests/e2e/cli.rs', 'tests/e2e/mcp.rs', 'tests/e2e/serve.rs']) {
+    eq(lanes([f]).jobs, ['fmt', 'clippy', 'test', 'checker-laws'], f)
+  }
+  eq(lanes(['tests/e2e/main.rs']).jobs, [...RUST_JOBS, 'checker-laws'], 'main.rs is lean')
+})
+
 // ── ci-guard ───────────────────────────────────────────────────────────────
 
 test('ci-guard: the job ids are exactly ci.yml\'s', () => {

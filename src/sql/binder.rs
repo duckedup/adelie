@@ -15,16 +15,27 @@ use crate::types::{DataType, Value, coerce, companion_name};
 
 use super::ast;
 use super::error::SqlError;
+use super::suggest;
 
 /// What the binder needs from storage: a table's full field list, or `None` if it does not
 /// exist. `View` implements this directly; tests use a small stub.
 pub(crate) trait Catalog {
     fn fields_of(&self, name: &TableName) -> Option<Vec<exec::Field>>;
+    /// Table names in database `db`, for did-you-mean hints.
+    fn table_names(&self, _db: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 impl Catalog for View {
     fn fields_of(&self, name: &TableName) -> Option<Vec<exec::Field>> {
         self.table(name).map(|e| e.fields())
+    }
+
+    fn table_names(&self, db: &str) -> Vec<String> {
+        let tables = &self.snapshot().manifest().tables;
+        let names = tables.iter().filter(|t| t.name.db == db);
+        names.map(|t| t.name.name.clone()).collect()
     }
 }
 
@@ -532,10 +543,10 @@ impl<'a> Binder<'a> {
                 }
                 _ => return Err(bad()),
             };
-            let field = fields
-                .iter()
-                .find(|f| f.name == col_name)
-                .ok_or_else(|| SqlError::Bind(format!("column \"{col_name}\" does not exist")))?;
+            let field = fields.iter().find(|f| f.name == col_name).ok_or_else(|| {
+                let hint = suggest::hint(&col_name, fields.iter().map(|f| f.name.clone()));
+                SqlError::Bind(format!("column \"{col_name}\" does not exist{hint}"))
+            })?;
             let value = self.literal_value(lit, &field.ty)?;
             if value.is_null() {
                 return Err(bad());
@@ -1286,10 +1297,10 @@ impl<'a> Binder<'a> {
         name: &TableName,
         alias: &str,
     ) -> Result<(LogicalPlan, Scope), SqlError> {
-        let fields = self
-            .catalog
-            .fields_of(name)
-            .ok_or_else(|| SqlError::Bind(format!("table {name} does not exist")))?;
+        let fields = self.catalog.fields_of(name).ok_or_else(|| {
+            let hint = suggest::hint(&name.name, self.catalog.table_names(&name.db));
+            SqlError::Bind(format!("table {name} does not exist{hint}"))
+        })?;
         let rel = self.next_rel();
         // A CTE is inlined per reference, so `WITH` chains can grow the plan exponentially.
         if rel >= MAX_RELATIONS {
@@ -1395,7 +1406,12 @@ impl<'a> Binder<'a> {
             .filter(|c| c.name == name && qualifier.is_none_or(|q| c.qualifier == q))
             .collect();
         match matches.len() {
-            0 => Err(SqlError::Bind(format!("column \"{name}\" does not exist"))),
+            0 => {
+                let hint = suggest::hint(name, scope.cols.iter().map(|c| c.name.clone()));
+                Err(SqlError::Bind(format!(
+                    "column \"{name}\" does not exist{hint}"
+                )))
+            }
             1 => Ok(matches[0]),
             _ => Err(SqlError::Bind(format!("column \"{name}\" is ambiguous"))),
         }
