@@ -83,13 +83,17 @@ A bug you find while working is fixed in the same PR, not filed for later (D0010
 just ci        # fmt-check + clippy (-D warnings) + test, lean library build
 just test      # tests, lean library build (--no-default-features)
 just lint      # clippy only        just fmt   # format
+just ci-full   # also the default build (CLI, MCP, HTTP): run it for surface code
 just miri      # UB check (nightly)
 ```
 
 Rust 1.98, pinned in `rust-toolchain.toml`. Edition 2024. `#![deny(unsafe_code)]`.
 
-- **Build budget:** the lean clean build stays under 60s, CI-enforced. A dependency that
-  blows it, or any bundled-C crate, is a design change: issue first (D0004).
+- **Build budget:** the lean clean build stays under 60s and the default under 120s, both
+  CI-timed. A dependency that blows it, or any bundled-C crate, is a design change: issue
+  first (D0004).
+- **Use widely used crates for infrastructure** (HTTP, JSON, CLI args, MCP), optional behind
+  a feature so the lean build stays dependency-free; hand-roll only the core problem (D0017).
 - **DuckDB is test-only and lives in `bench/`**, its own Cargo workspace, never a dependency
   of the root crate (D0006). The test harness is `harness/` (zero deps, unpublished).
 - **CI:** a required check's workflow lists `merge_group:` (D0003).

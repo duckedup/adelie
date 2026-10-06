@@ -13,7 +13,12 @@ export const meta = {
 //   groups: [                              // ordered; group N starts after N-1 finishes
 //     [ { dir, content, path }, ... ],     // path: ABSOLUTE path to the blueprint file
 //   ],
+//   basePatch: "/abs/base.patch",          // optional: `git diff origin/main HEAD --binary`
 // }
+//
+// A worktree is cut from the default branch, NOT from the branch you are on. When the branch
+// already has commits (an earlier run's groups, a hand fix), pass them as `basePatch`: every
+// agent applies it first, or it works against a tree missing the code it builds on.
 //
 // `content` is captured at launch for every group, so pass `path` as well: the agent reads
 // it at unit start, which is what makes a mid-run blueprint edit reach later groups (#175).
@@ -51,8 +56,8 @@ const outOfScope = spec => (files) =>
 function implPrompt(spec, prior, upstream = []) {
   const patchFile = `${cfg.scratchDir}/${key(spec)}.patch`
   const deps = upstream.length ? `
-FIRST, lay down the earlier groups' work. Your worktree is cut from the branch commit and does
-NOT contain it; your blueprint is in a later group precisely because it builds on this. Apply
+FIRST, lay down the earlier work. Your worktree is cut from the default branch and does NOT
+contain it; your blueprint is in a later group precisely because it builds on this. Apply
 it and commit it, so that your own patch below contains only your changes:
 ${upstream.map(f => `    git apply --whitespace=nowarn ${f}`).join('\n')}
     git add -A && git commit -q -m "upstream: prior groups"
@@ -144,7 +149,7 @@ const landed = []
 for (let g = 0; g < groups.length; g++) {
   log(`group ${g + 1}/${groups.length}: ${groups[g].length} blueprint(s)${landed.length ? `, on ${landed.length} upstream patch(es)` : ''}`)
   const specs = groups[g].map((spec, i) => ({ ...spec, _g: g, _i: i }))
-  const upstream = [...landed]
+  const upstream = [...(cfg.basePatch ? [cfg.basePatch] : []), ...landed]
   const done = await parallel(specs.map(spec => () => implementOne(spec, upstream)))
   results.push(...done)
   for (const r of done) if (r && !r.failed && r.result && r.result.patch_file) landed.push(r.result.patch_file)

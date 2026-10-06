@@ -13,6 +13,11 @@ Needs blueprints. If none exist for this target, run **Spec** first (including i
    you launch, so without `path` a blueprint edited mid-run reaches nobody, including groups
    that have not started; the agent reads `path` at its own start instead. The file is
    gitignored, so it is never in the agent's worktree and the path must be absolute (#175).
+   **A worktree is cut from the default branch, not from your branch.** If the branch already
+   carries commits (an earlier run, a hand fix), write them to a patch
+   (`git diff origin/main HEAD --binary > <scratch>/base.patch`) and pass it as `basePatch`, or
+   every agent builds against a tree missing that code. Found in adelie-v5u: a group-2 agent
+   wrote against `main` and returned stubs-as-new-files that would not apply.
    **Groups sequence state, not just timing.** A later group is handed every earlier patch and
    applies them before it starts, because that dependency is the only reason it is a later
    group. So put a blueprint in group N+1 exactly when it needs group N's code to exist —
