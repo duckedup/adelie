@@ -41,6 +41,11 @@ deps:
 # The local gate: what CI's fmt, clippy and test jobs run on the lean build
 ci: fmt-check lint test
 
+# The default build too (CLI, MCP, HTTP): run this for surface code, which `ci` does not build
+ci-full: fmt-check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+
 # Recover the beads database in a fresh clone and wire the remote (never `bd init`, D0002)
 bd-setup:
     ./scripts/bd-setup.sh

@@ -2,10 +2,18 @@
 //! module here.
 
 mod adelie;
+#[cfg(feature = "cli")]
+mod cli;
+#[cfg(feature = "cli")]
+mod common;
 mod exec;
 mod lifecycle;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod migrate;
 mod segment;
+#[cfg(feature = "serve")]
+mod serve;
 mod slt;
 mod sql;
 mod store;

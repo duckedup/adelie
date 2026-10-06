@@ -24,8 +24,18 @@ const WORKSPACE_JOBS = ['fmt', 'clippy', 'test', 'miri']
 const BENCH = [/^bench\//, /^harness\//, /^tests\/slt\//, /^\.github\/workflows\/ci\.yml$/]
 const SKILL = [/^\.claude\/skills\/adelie\/(lib|bin)\//, /^\.claude\/hooks\//, /^\.github\/workflows\/ci\.yml$/]
 
+// Feature-gated surface code (cli, mcp, serve) is absent from the lean build, so only the
+// jobs that build the default features see it. release and miri are lean; build-budget
+// times both builds (D0004), so it compiles them too.
+const GATED = String.raw`src/(cli|mcp|server|surface|bin)/|tests/e2e/(cli|mcp|serve)\.rs$`
+const LEAN = [new RegExp(`^(?!${GATED})(src|tests)/`), ...RUST.filter(re => !/^\^(src|tests)\\\//.test(re.source))]
+const LEAN_JOBS = ['release', 'miri']
+
 export const CI_JOBS = {
-  ...Object.fromEntries(RUST_JOBS.map(j => [j, WORKSPACE_JOBS.includes(j) ? [...RUST, ...HARNESS] : RUST])),
+  ...Object.fromEntries(RUST_JOBS.map(j => {
+    const base = LEAN_JOBS.includes(j) ? LEAN : RUST
+    return [j, WORKSPACE_JOBS.includes(j) ? [...base, ...HARNESS] : base]
+  })),
   bench: BENCH,
   'checker-selftest': SKILL,
   'checker-laws': [/./],

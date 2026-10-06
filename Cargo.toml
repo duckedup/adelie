@@ -1,6 +1,6 @@
 [package]
 name = "adelie"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.98"
 description = "A pure-Rust columnar analytics store with SQL."
@@ -27,12 +27,25 @@ path = "src/bin/adelie.rs"
 required-features = ["cli"]
 
 [features]
-# The default build ships the whole binary. `--no-default-features` is the lean library
-# build that `just test`/`just ci` run and CI's build budget times clean (D0004).
-default = ["cli"]
-cli = []
+# The default build ships the CLI, the MCP server and the HTTP server. `--no-default-features`
+# is the lean, dependency-free library build that `just test`/`just ci` run and CI's build
+# budget times clean (D0004). The default build has its own 120s budget.
+default = ["cli", "mcp", "serve"]
+cli = ["dep:clap", "dep:csv", "dep:comfy-table", "dep:serde", "dep:serde_json"]
+mcp = ["cli", "dep:rmcp", "dep:tokio"]
+serve = ["mcp", "dep:axum", "dep:tokio"]
 
+# Widely used crates for everything that is not the core problem. All optional: the lean
+# build has no dependencies.
 [dependencies]
+clap = { version = "4", optional = true, default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+csv = { version = "1", optional = true }
+comfy-table = { version = "8", optional = true, default-features = false }
+serde = { version = "1", optional = true, default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", optional = true }
+rmcp = { version = "3", optional = true, default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1", optional = true, default-features = false, features = ["rt-multi-thread", "net", "io-util", "io-std", "sync", "time", "macros", "signal"] }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio", "json"] }
 
 [dev-dependencies]
 adelie-harness = { path = "harness" }

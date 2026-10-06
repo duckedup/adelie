@@ -13,9 +13,12 @@ mod error;
 mod execute;
 mod planner;
 mod result;
+mod suggest;
+#[cfg(feature = "mcp")]
+pub(crate) use suggest::hint;
 
 pub use parser::{MAX_DEPTH, ParseError, parse};
 
 pub use error::SqlError;
-pub use execute::{Options, execute, execute_with};
+pub use execute::{Options, execute, execute_read, execute_with, is_read_only};
 pub use result::{Rows, SqlOutput};
