@@ -14,6 +14,7 @@ mod execute;
 mod planner;
 mod result;
 mod suggest;
+pub(crate) use suggest::hint;
 
 pub use parser::{MAX_DEPTH, ParseError, parse};
 
