@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::ServiceExt;
+use tokio::sync::Semaphore;
 
 use crate::surface;
 
@@ -25,14 +26,25 @@ pub struct Guardrails {
 pub struct AdelieMcp {
     handle: Arc<surface::Handle>,
     guard: Arc<Guardrails>,
+    /// One permit per morsel thread, held by each running query until it finishes: excess
+    /// calls queue instead of oversubscribing the scheduler. `adelie serve` shares it with
+    /// `/query`.
+    permits: Arc<Semaphore>,
 }
 
 impl AdelieMcp {
     pub fn new(handle: Arc<surface::Handle>, guard: Guardrails) -> Self {
+        let threads = crate::exec::ExecOptions::default().threads.max(1);
         AdelieMcp {
             handle,
             guard: Arc::new(guard),
+            permits: Arc::new(Semaphore::new(threads)),
         }
+    }
+
+    /// The query permits, so another route can share the same bound.
+    pub fn permits(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.permits)
     }
 }
 

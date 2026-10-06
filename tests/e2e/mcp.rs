@@ -170,7 +170,8 @@ fn lists_exactly_the_four_tools() {
     assert_eq!(listed[0]["rows"], 500);
 }
 
-/// Fails if the row cap is not applied: 500 rows come back, or the note does not say 500.
+/// Fails if the row cap is not applied: 500 rows come back, or the note does not say 500, or
+/// a `sample` clamped to the cap says nothing about it.
 #[test]
 #[cfg_attr(miri, ignore)] // spawns the adelie binary
 fn sql_results_are_capped_with_a_note() {
@@ -182,6 +183,15 @@ fn sql_results_are_capped_with_a_note() {
     assert!(note.contains("500"), "{note}");
     let sample = c.call_json("sample", json!({ "table": "t", "n": 400 }));
     assert_eq!(sample["rows"].as_array().unwrap().len(), 50);
+    let note = sample["truncated"]
+        .as_str()
+        .expect("sample truncation note");
+    assert!(
+        note.contains("400") && note.contains("row cap 50"),
+        "{note}"
+    );
+    let small = c.call_json("sample", json!({ "table": "t", "n": 5 }));
+    assert!(small.get("truncated").is_none(), "{small}");
 }
 
 /// Fails if a write runs without `--allow-writes`, or stops working with it.

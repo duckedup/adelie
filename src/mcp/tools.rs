@@ -6,6 +6,8 @@ use rmcp::schemars::JsonSchema;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 use super::{AdelieMcp, guard};
 use crate::storage::TableSummary;
@@ -46,18 +48,29 @@ fn fail(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg)])
 }
 
-/// Runs `f` off the async threads; a panic in it becomes an error string.
+/// Runs `f` off the async threads holding one of `permits` until `f` returns (not until the
+/// caller stops waiting); a panic in it becomes an error string.
 async fn blocking<T: Send + 'static>(
+    permits: &Arc<Semaphore>,
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::task::spawn_blocking(f)
+    let permit = Arc::clone(permits)
+        .acquire_owned()
         .await
-        .map_err(|e| format!("tool failed: {e}"))?
+        .map_err(|_| "server is shutting down".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+    .map_err(|e| format!("tool failed: {e}"))?
 }
 
-fn shaped_result(shaped: Shaped) -> CallToolResult {
+/// `cut` is a note from before the query ran (a sample clamped to the row cap); a note from
+/// shaping the result wins over it.
+fn shaped_result(shaped: Shaped, cut: Option<String>) -> CallToolResult {
     let mut json = shaped.json;
-    if let (Some(note), Some(obj)) = (shaped.truncated, json.as_object_mut()) {
+    if let (Some(note), Some(obj)) = (shaped.truncated.or(cut), json.as_object_mut()) {
         obj.insert("truncated".to_string(), Json::String(note));
     }
     ok(&json)
@@ -82,9 +95,9 @@ fn find_table<'a>(tables: &'a [TableSummary], wanted: &str) -> Result<&'a TableS
 
 impl AdelieMcp {
     /// Runs `query` under the guardrails; `gate` applies the read-only check first.
-    async fn run_query(&self, query: String, gate: bool) -> CallToolResult {
+    async fn run_query(&self, query: String, gate: bool, cut: Option<String>) -> CallToolResult {
         let (handle, guard) = (self.handle.clone(), self.guard.clone());
-        let shaped = blocking(move || {
+        let shaped = blocking(&self.permits, move || {
             if gate {
                 guard::check_sql(&guard, &query)?;
             }
@@ -95,14 +108,17 @@ impl AdelieMcp {
         })
         .await;
         match shaped {
-            Ok(shaped) => shaped_result(shaped),
+            Ok(shaped) => shaped_result(shaped, cut),
             Err(msg) => fail(msg),
         }
     }
 
     async fn tables(&self) -> Result<Vec<TableSummary>, String> {
         let handle = self.handle.clone();
-        blocking(move || Ok(handle.view().map_err(|e| e.to_string())?.tables())).await
+        blocking(&self.permits, move || {
+            Ok(handle.view().map_err(|e| e.to_string())?.tables())
+        })
+        .await
     }
 }
 
@@ -174,20 +190,25 @@ impl AdelieMcp {
             Ok(t) => t,
             Err(msg) => return fail(msg),
         };
-        let n = guard::sample_rows(args.n, self.guard.limits.max_rows);
+        let cap = self.guard.limits.max_rows;
+        let n = guard::sample_rows(args.n, cap);
+        let cut = args
+            .n
+            .filter(|&asked| asked > n)
+            .map(|asked| format!("asked for {asked} rows; returned at most {n} (row cap {cap})"));
         let query = format!(
             "SELECT * FROM {}.{} LIMIT {n}",
             guard::quote_ident(&table.name.db),
             guard::quote_ident(&table.name.name)
         );
-        self.run_query(query, false).await
+        self.run_query(query, false, cut).await
     }
 
     #[tool(
         description = "Run SQL. Reads are always allowed; writes only when the server allows them."
     )]
     async fn sql(&self, Parameters(args): Parameters<SqlArgs>) -> CallToolResult {
-        self.run_query(args.query, true).await
+        self.run_query(args.query, true, None).await
     }
 }
 

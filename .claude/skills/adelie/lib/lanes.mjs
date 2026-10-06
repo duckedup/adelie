@@ -25,10 +25,11 @@ const BENCH = [/^bench\//, /^harness\//, /^tests\/slt\//, /^\.github\/workflows\
 const SKILL = [/^\.claude\/skills\/adelie\/(lib|bin)\//, /^\.claude\/hooks\//, /^\.github\/workflows\/ci\.yml$/]
 
 // Feature-gated surface code (cli, mcp, serve) is absent from the lean build, so only the
-// jobs that build the default features see it: build-budget, release and miri are all lean.
+// jobs that build the default features see it. release and miri are lean; build-budget
+// times both builds (D0004), so it compiles them too.
 const GATED = String.raw`src/(cli|mcp|server|surface|bin)/|tests/e2e/(cli|mcp|serve)\.rs$`
 const LEAN = [new RegExp(`^(?!${GATED})(src|tests)/`), ...RUST.filter(re => !/^\^(src|tests)\\\//.test(re.source))]
-const LEAN_JOBS = ['build-budget', 'release', 'miri']
+const LEAN_JOBS = ['release', 'miri']
 
 export const CI_JOBS = {
   ...Object.fromEntries(RUST_JOBS.map(j => {

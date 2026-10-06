@@ -57,10 +57,16 @@ impl Server {
         let mut s = TcpStream::connect(&self.addr).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let mut head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
-            self.addr,
+            "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n",
             body.len()
         );
+        // The real address is the Host unless a test sends its own.
+        if !headers
+            .iter()
+            .any(|h| h.to_ascii_lowercase().starts_with("host:"))
+        {
+            head.push_str(&format!("Host: {}\r\n", self.addr));
+        }
         for h in headers {
             head.push_str(h);
             head.push_str("\r\n");
@@ -131,6 +137,44 @@ fn health_reports_the_version() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["status"], "ok");
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// Fails if a non-loopback `Host` reaches a loopback-bound server (DNS rebinding): a page on
+/// `evil.example` resolving to 127.0.0.1 must not be able to run `/query`.
+#[test]
+#[cfg_attr(miri, ignore)] // spawns the adelie binary
+fn loopback_server_refuses_a_foreign_host() {
+    let dir = fixture("serve-host");
+    let server = Server::start(&dir, &[]);
+    let body = serde_json::json!({ "sql": "SELECT 1" }).to_string();
+    let json = "Content-Type: application/json";
+    let (status, _) = server.request(
+        "POST",
+        "/query",
+        &["Host: evil.example", json],
+        body.as_bytes(),
+    );
+    assert_eq!(status, 403);
+    let (status, _) = server.request("GET", "/health", &["Host: evil.example:80"], b"");
+    assert_eq!(status, 403);
+    let (status, _) = server.request("GET", "/health", &["Host: localhost:1"], b"");
+    assert_eq!(status, 200);
+}
+
+/// Fails if a malformed `/query` body gets axum's plain-text rejection instead of the JSON
+/// `{"error": ...}` every other `/query` failure returns.
+#[test]
+#[cfg_attr(miri, ignore)] // spawns the adelie binary
+fn malformed_query_body_is_a_json_error() {
+    let dir = fixture("serve-badjson");
+    let server = Server::start(&dir, &[]);
+    let json = "Content-Type: application/json";
+    for body in [&b"{not json"[..], &b"{}"[..]] {
+        let (status, text) = server.request("POST", "/query", &[json], body);
+        assert!((400..500).contains(&status), "{status} {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|_| panic!("{text}"));
+        assert!(v["error"].is_string(), "{text}");
+    }
 }
 
 /// Fails if the HTTP rows differ from what the library returns for the same SELECT.
@@ -226,7 +270,6 @@ fn sql_reads_while_serve_holds_the_writer() {
 }
 
 /// Fails if `/mcp` is not mounted or does not answer `initialize` as the `adelie` server.
-/// Unverified until the MCP handler (src/mcp) is merged.
 #[test]
 #[cfg_attr(miri, ignore)] // spawns the adelie binary
 fn mcp_initialize_names_the_server() {

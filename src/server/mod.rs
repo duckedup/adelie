@@ -27,7 +27,8 @@ pub fn run(cfg: ServeConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
 async fn serve(cfg: ServeConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
     let handle = Arc::new(Handle::open(&cfg.dir, cfg.guard.allow_writes)?);
     let listener = tokio::net::TcpListener::bind(cfg.listen).await?;
-    let app = routes::router(handle.clone(), cfg.guard);
+    let loopback = cfg.listen.ip().is_loopback();
+    let app = routes::router(handle.clone(), cfg.guard, loopback);
     let mut out = std::io::stdout().lock();
     writeln!(out, "listening on http://{}", listener.local_addr()?)?;
     out.flush()?;
